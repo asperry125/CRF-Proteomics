@@ -1,0 +1,957 @@
+---
+title: "Exercise Proteomics CARDIA - 1"
+author: "Andrew Perry"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    theme: cerulean
+    toc: yes
+    toc_depth: 3
+    number_sections: false
+    toc_float: true
+    toc_collapsed: true
+    code_folding: hide
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(ggrepel)
+library(foreach)
+library(doParallel)
+library(caret)
+library(UpSetR)
+library(tibble)
+library(gtsummary)
+```
+
+# Load data
+
+```{r}
+somaDataFile <- "/Users/perry/Library/CloudStorage/OneDrive-VUMC/Research/CARDIA/Proteomics QC Files/CARDIA_Y25_Final_Proteomics.Rdata"
+somaDictionaryFile <- "/Users/perry/Library/CloudStorage/OneDrive-VUMC/Research/CARDIA/Proteomics QC Files/CARDIA_Y25_Proteomics_DictionaryQC.csv"
+CARDIAFile <- "/Users/perry/Library/CloudStorage/OneDrive-VUMC/Research/CARDIA/Data from Laura/CARDexpoV3.csv"
+fenlandMartysFile <- "/Users/perry/Library/CloudStorage/OneDrive-VUMC/Research/CARDIA/Exercise proteomics/Fenland Data/Protein_Linear_Models_V2.xlsx"
+
+load(somaDataFile)
+protein.dictionary <- readr::read_csv(somaDictionaryFile)
+cardia.data <- readr::read_csv(CARDIAFile)
+fenland.martys <- NULL
+  
+for(i in readxl::excel_sheets(fenlandMartysFile)){
+  fenland.martys[[i]] <- readxl::read_excel(fenlandMartysFile, sheet = i)
+}
+
+filesToMd5 <- c(somaDataFile,
+                somaDictionaryFile,
+                CARDIAFile,
+                fenlandMartysFile)
+
+dataFileInfo=data.frame(
+  File=basename(filesToMd5),
+  md5=tools::md5sum(filesToMd5)
+)
+
+knitr::kable(dataFileInfo)
+```
+
+
+## Proteomics cleaning
+Filter out Spuriomers, Control, Non-Biotin, Non-Cleavable, Non-Human proteins
+
+```{r}
+table(protein.dictionary$Type)
+nonProteins <- protein.dictionary %>% filter(!Type=="Protein") %>% pull(SeqId)
+nonProteins <- gsub("-", ".", nonProteins)
+nonProteins <- paste0("seq.", nonProteins)
+CARDIA_Y25_Final_Proteomics <- CARDIA_Y25_Final_Proteomics %>% select(!any_of(nonProteins))
+```
+## Filter out proteins with a median intraplate CV >20% or interplate CV > 20%
+
+How many proteins do we start with?
+```{r}
+ncol(CARDIA_Y25_Final_Proteomics %>% select(starts_with("seq")))
+```
+
+```{r}
+cv.cutoff=20
+proteinsRemovedIntraplate <- protein.dictionary %>% filter(median.intraplate.cv > cv.cutoff) %>% pull(AptName)
+proteinsRemovedInterplate <- protein.dictionary %>% filter(interplate.cv > cv.cutoff) %>% pull(AptName)
+
+CARDIA_Y25_Final_Proteomics_CVfiltered <- CARDIA_Y25_Final_Proteomics %>% select(!any_of(c(proteinsRemovedInterplate, proteinsRemovedIntraplate)))
+
+length(unique(c(proteinsRemovedIntraplate, proteinsRemovedInterplate))) #71 proteins removed
+```
+
+We removed `r length(unique(c(proteinsRemovedIntraplate, proteinsRemovedInterplate)))` unique proteins based on our intraplate/interplate CV threshold of `r cv.cutoff`%.
+
+Log transform proteins and scale
+
+```{r}
+CARDIA_Y25_Final_Proteomics_CVfiltered_log <- CARDIA_Y25_Final_Proteomics_CVfiltered
+CARDIA_Y25_Final_Proteomics_CVfiltered_log[,colnames(CARDIA_Y25_Final_Proteomics_CVfiltered_log %>% select(starts_with("seq")))] <- scale(log(CARDIA_Y25_Final_Proteomics_CVfiltered_log[,colnames(CARDIA_Y25_Final_Proteomics_CVfiltered_log %>% select(starts_with("seq")))]))
+```
+
+Change ID formatting
+```{r}
+CARDIA_Y25_Final_Proteomics_CVfiltered_log <- CARDIA_Y25_Final_Proteomics_CVfiltered_log %>% mutate(short_id = gsub("-", "", SubjectID))
+CARDIA_Y25_Final_Proteomics_CVfiltered_log$short_id <- gsub("Y25","", CARDIA_Y25_Final_Proteomics_CVfiltered_log$short_id)
+```
+
+# Examine the fitness/exercise variables.
+
+Look at the distributions, look for outliers etc.
+
+variables of interest are:
+G22DURTN = GXT DURATION (SEC.)
+
+
+```{r}
+# decode certain variables into factors
+cardia.data$SEX <- factor(cardia.data$SEX, levels = c(1,2), labels = c("Male", "Female"))
+cardia.data$RACE <- factor(cardia.data$RACE, levels = c(4,5), labels = c("Black", "White"))
+cardia.data$diab8 <- factor(cardia.data$diab8, levels = c(0,1), labels = c("No", "Yes"))
+cardia.data$bpmed8 <- factor(cardia.data$bpmed8, levels = c(0,1), labels = c("No", "Yes"))
+
+exercise.vars <- c("G22DURTN")
+
+table(accelerometer.data$ID %in% cardia.data$ID)
+cardia.data <- cardia.data %>% left_join(accelerometer.data, by="ID")
+cardia.data$ID <- as.character(cardia.data$ID)
+cardia.data$short_id <- as.character(cardia.data$short_id)
+
+cardia.data <- cardia.data %>% filter(short_id %in% CARDIA_Y25_Final_Proteomics_CVfiltered_log$short_id)
+
+
+adjustmentList <- list(unadjusted = NULL,
+                       
+                       ageSexRace = c("EX8_AGE",
+                                      "SEX",
+                                      "RACE"),
+                       
+                       ageSexRaceBMI = c("EX8_AGE",
+                                            "SEX",
+                                            "RACE",
+                                            "H20BMI")
+                         )
+```
+
+## Missingness
+
+```{r}
+Amelia::missmap(cardia.data %>% select(all_of(c(exercise.vars))))
+```
+## Distributions
+
+```{r}
+temp <- cardia.data %>% select(all_of(c("ID", exercise.vars))) %>% 
+                        pivot_longer(cols = all_of(exercise.vars), names_to = "var.name", values_to = "value")
+
+ggplot(temp, aes(x=value)) +
+  geom_histogram(binwidth = function(x) (max(x)-min(x))/nclass.scott(x)) +
+  facet_wrap(~var.name, scales = "free") +
+  ggtitle("Raw distributions")
+
+
+ggplot(temp, aes(x=log(value))) +
+  geom_histogram(binwidth = function(x) (max(x)-min(x))/nclass.scott(x)) +
+  facet_wrap(~var.name, scales = "free") +
+  ggtitle("Log distributions")
+
+temp %>% group_by(var.name) %>% summarise(min = min(value, na.rm = TRUE),
+                                          one.percent = quantile(value, probs = 0.01, na.rm = TRUE),
+                                          median = median(value, na.rm = TRUE),
+                                          ninetynine.percent = quantile(value, probs = 0.99, na.rm = TRUE),
+                                          max = max(value, na.rm = TRUE),
+                                          missing = sum(is.na(value))/length(value))
+
+temp <- temp %>% group_by(var.name) %>% mutate(fivesds = (value>(mean(value, na.rm=TRUE)+5*sd(value, na.rm = TRUE))))
+fivesds <- temp %>% filter(fivesds==TRUE)
+dim(fivesds)
+rm(temp)
+```
+
+# Cumulative exposure to AHA Life Simple Seven
+
+We will carry forward the last observation until Y20. Since all participants had proteomics Y25, they must be alive at Y20.
+```{r}
+lss.vars <- c("CVHBHI0",
+             "CVHBHI2",
+             "CVHBHI5",
+             "CVHBHI7",
+             "CVHBHI10",
+             "CVHBHI15",
+             "CVHBHI20",
+             "CVHBHI25",
+             "CVHBHI30")
+
+temp <- cardia.data %>%
+        select(all_of(c("short_id", lss.vars))) %>% 
+        pivot_longer(cols=all_of(lss.vars))
+
+temp$short_id <- as.factor(temp$short_id)
+
+temp$visit <- gsub("CVHBHI", "", temp$name)
+temp$visit <- as.numeric(temp$visit)
+
+# check missingness
+missing.lss <- temp %>% group_by(short_id) %>% summarise(isNA = sum(is.na(value))) %>% arrange(desc(isNA))
+table(missing.lss$isNA)
+
+table(is.na(cardia.data$CVHBHI0)) #143 missing baseline LSS eval
+table(is.na(cardia.data$CVHBHI0) & is.na(cardia.data$CVHBHI2)) # 109 missing baseline and Y2 LSS eval
+table(is.na(cardia.data$CVHBHI20) & is.na(cardia.data$CVHBHI25) & is.na(cardia.data$CVHBHI30)) # 624 missing LSS from Y20 onward
+table((is.na(cardia.data$CVHBHI0) & is.na(cardia.data$CVHBHI2)) | (is.na(cardia.data$CVHBHI20) & is.na(cardia.data$CVHBHI25) & is.na(cardia.data$CVHBHI30))) # 695
+
+# check overall trend in LSS in the cohort over time
+test <- temp %>% 
+        group_by(visit) %>% 
+        summarise(avg = mean(value, na.rm = TRUE),
+                  stdev = sd(value, na.rm = TRUE))
+
+ggplot(test, aes(x=visit, y=avg)) +
+  geom_line() +
+  geom_errorbar(aes(ymin=avg-stdev, ymax=avg+stdev), width=.2) +
+  labs(title = "Change in LSS over time in CARDIA",
+       subtitle = "Average LSS at each time point for all available participants",
+       y = "AHA Life Simple 7",
+       x = "Year") +
+  theme_classic() 
+
+
+# do the last observation carried forward and calculate AUC
+temp <- temp %>% 
+        group_by(short_id) %>% 
+        mutate(value.locf = DescTools::LOCF(value))
+
+cumLSS20 <- temp %>% 
+            filter(!is.na(value.locf)) %>% 
+            group_by(short_id) %>% 
+            summarise(y25cumulativeLSS = MESS::auc(visit, value.locf, from = 0, to =25))
+
+cardia.data.outliers.removed <- cardia.data.outliers.removed %>% left_join(cumLSS20, by="short_id")
+
+rm(cumLSS20, temp, test, missing.lss, lss.vars)
+```
+
+
+
+# Re-examine distributions after removing outliers
+```{r}
+temp <- cardia.data.outliers.removed %>% select(all_of(c("ID", exercise.vars, "y25cumulativeLSS"))) %>% 
+                                         pivot_longer(cols = all_of(c(exercise.vars, "y25cumulativeLSS")), names_to = "var.name", values_to = "value")
+
+ggplot(temp, aes(x=value)) +
+  geom_histogram(binwidth = function(x) (max(x)-min(x))/nclass.scott(x)) +
+  facet_wrap(~var.name, scales = "free") +
+  ggtitle("Raw distributions")
+
+ggplot(temp, aes(x=log(value))) +
+  geom_histogram(binwidth = function(x) (max(x)-min(x))/nclass.scott(x)) +
+  facet_wrap(~var.name, scales = "free") +
+  ggtitle("Log distributions")
+
+temp %>% group_by(var.name) %>% summarise(min = min(value, na.rm = TRUE),
+                                          one.percent = quantile(value, probs = 0.01, na.rm = TRUE),
+                                          median = median(value, na.rm = TRUE),
+                                          ninetynine.percent = quantile(value, probs = 0.99, na.rm = TRUE),
+                                          max = max(value, na.rm = TRUE),
+                                          missing = sum(is.na(value))/length(value))
+
+rm(temp)
+```
+
+
+examine the correlation heatmap of the exercise variables
+```{r, fig.width=5, fig.height=5}
+corr <- cor(as.matrix(cardia.data.outliers.removed[,c(exercise.vars, "y25cumulativeLSS", "y25cumulativePA")]), use = "pairwise.complete", method ="pearson")
+ggcorrplot::ggcorrplot(corr)
+```
+
+
+
+
+## Table 1 before log transforming
+
+```{r}
+table1data <- cardia.data.outliers.removed
+gtsummary::tbl_summary(table1data,
+                       include = all_of(c(adjustmentList[["ageSexRaceBMI"]], exercise.vars, "y25cumulativeLSS"))) %>%
+            add_n()
+```
+
+```{r}
+
+cardia.data.outliers.removed$H20BMI <- log(cardia.data.outliers.removed$H20BMI)
+
+temp <- cardia.data.outliers.removed %>% select(all_of(c("ID", exercise.vars, "y25cumulativeLSS", "y25cumulativePA"))) %>% 
+                                         pivot_longer(cols = all_of(c(exercise.vars, "y25cumulativeLSS", "y25cumulativePA")), names_to = "var.name", values_to = "value")
+
+ggplot(temp, aes(x=value)) +
+  geom_histogram(binwidth = function(x) (max(x)-min(x))/nclass.scott(x)) +
+  facet_wrap(~var.name, scales = "free") +
+  labs(title = "Distributions before models",
+       subtitle = "post log-transformation",
+       caption = paste("variables log-transformed:", paste(vars.to.log, collapse = ", ")))
+
+rm(temp)
+
+table(cardia.data.outliers.removed$short_id %in% CARDIA_Y25_Final_Proteomics_CVfiltered_log$short_id)
+```
+
+```{r}
+dataForModels <- cardia.data.outliers.removed %>%
+                 select(all_of(c("short_id", adjustmentList[["ageSexRaceBMI"]], exercise.vars))) %>%
+                 left_join(CARDIA_Y25_Final_Proteomics_CVfiltered_log, by="short_id")
+
+protein.vars <- colnames(dataForModels %>% select(starts_with("seq")))
+
+outcome.key <- data.frame(outcome = c("G22DURTN", "G22DURTN_score", "H18HEAVY", "H18HEAVY_score", "H18TOTAL", "H18TOTAL_score", "soren_score"),
+                          outcome_new = c("ETT time", "ETT time protein score", "Heavy intensity (questionnaire)", "Heavy intensity protein score", "Total intensity (questionnaire)", "Total intensity protein score", "ETT time protein score (Soren)"))
+```
+
+We have merged in the exercise data and protein data.
+
+Proteins are log transformed. We will scale the derive and validate samples separately AFTER randomly splitting them.
+
+Exercise variables are log transformed where appropriate. We will scale the derive and validate samples separately AFTER randomly splitting them.
+
+BMI is log transformed, not scaled.
+
+Other adjustments are not scaled.
+
+# Regression
+## Marty Larsen function
+```{r}
+marty_larsen <- function(predictor, outcome, adjustments = NULL, input_data){
+  
+  ifelse(is.null(adjustments), rhs <- predictor ,rhs <- paste(predictor, paste(adjustments, collapse = "+"), sep = "+"))
+  
+  fmla <- as.formula(paste0(outcome,"~",rhs))
+  temp <- glm(fmla, data=input_data, family = "gaussian")
+  
+  output <- data.frame(AptName = outcome,
+                       UniProt = protein.dictionary$UniProt[protein.dictionary$AptName==outcome],
+                       EntrezGeneSymbol = protein.dictionary$EntrezGeneSymbol[protein.dictionary$AptName==outcome],
+                       TargetFullName = protein.dictionary$TargetFullName[protein.dictionary$AptName==outcome],
+                       beta = summary(temp)$coefficients[predictor,"Estimate"],
+                       stdError = summary(temp)$coefficients[predictor,"Std. Error"],
+                       p.val = summary(temp)$coefficients[predictor, grep("Pr(>|[[:lower:]]|)", colnames(summary(temp)$coefficients), value = TRUE)],
+                       nobs = nobs(temp))
+  
+  rm(temp); rm(rhs); rm(fmla);
+  return(output)
+}
+```
+## LASSO function
+I will force in age, sex, race, and log(bmi).
+```{r}
+fit_control <- trainControl(method="repeatedcv",number=10,repeats=5,returnData=FALSE, savePredictions = "all", allowParallel = TRUE) 
+
+lasso <- function(outcome, predictors, forcedAdjustments=NULL, input_data){
+  # rhs <- paste(predictors, collapse = "+")
+  fmla<-as.formula(paste(outcome, "~."))
+  
+  set.seed(1234)
+  lasso.output <- caret::train(fmla,
+                              data=input_data,
+                              penalty.factor = c(rep(0, length(forcedAdjustments)), rep(1, length(predictors))),
+                              method="glmnet",
+                              family="gaussian",
+                              tuneGrid=expand.grid(alpha=1,
+                                                   lambda= 10**(seq(-5,5,by=0.2))),
+                              trControl=fit_control)
+  
+  return(lasso.output)
+}
+```
+## Loop
+```{r}
+# objects to store data
+derivationSubjectList <- NULL
+validationSubjectList <- NULL
+
+marty.output.derive <- NULL
+marty.output.validate <- NULL
+
+lasso.exercise.models <- NULL
+
+lasso.scores.derive <- NULL
+lasso.scores.validate <- NULL
+
+#setup parallel processing
+cores <- detectCores()-2
+registerDoParallel(cores=cores)
+    
+# loop over each exercise variable
+for(i in c("G22DURTN")){
+  dataForModelsSubset <- dataForModels[!is.na(dataForModels[[i]]),]
+  
+  # create a 70/30 split dataset, balanced by exercise variable or PA variable
+  set.seed(1234)
+  trainIndex <- caret::createDataPartition(dataForModelsSubset[[i]], 
+                                           p=0.70,
+                                           list = FALSE,
+                                           times = 1)
+  derive <- dataForModelsSubset[trainIndex,]
+  validate <- dataForModelsSubset[-trainIndex,]
+  
+  # scale the derive and validate samples separately
+  derive[,c(exercise.vars, protein.vars)] <- scale(derive[,c(exercise.vars, protein.vars)])
+  validate[,c(exercise.vars, protein.vars)] <- scale(validate[,c(exercise.vars, protein.vars)])
+  
+  # verify scaling
+  print(i)
+  print("Derivation sample")
+  print(summary(apply(derive[,c(exercise.vars, protein.vars)], 2, FUN = function(x) mean(x, na.rm=TRUE))))
+  print(summary(apply(derive[,c(exercise.vars, protein.vars)], 2, FUN = function(x) sd(x, na.rm=TRUE))))
+  print("Validation sample")
+  print(summary(apply(validate[,c(exercise.vars, protein.vars)], 2, FUN = function(x) mean(x, na.rm=TRUE))))
+  print(summary(apply(validate[,c(exercise.vars, protein.vars)], 2, FUN = function(x) sd(x, na.rm=TRUE))))
+  
+  # save the participant IDs for who is in the derive and who is in validate samples
+  derivationSubjectList[[i]] <- derive$short_id
+  validationSubjectList[[i]] <- validate$short_id
+  
+  # loop over each set of adjustments and do Marty's
+  for(j in names(adjustmentList)){
+    
+    # Marty's on the derivation sample
+    marty.output.derive[[j]][[i]] <- foreach(k=protein.vars, .combine = "rbind") %dopar% {
+    marty_larsen(outcome=k, predictor=i, adjustments = adjustmentList[[j]], input_data=derive)
+    }
+    # Marty's on the validation sample
+    marty.output.validate[[j]][[i]] <- foreach(k=protein.vars, .combine = "rbind") %dopar% {
+    marty_larsen(outcome=k, predictor=i, adjustments = adjustmentList[[j]], input_data=validate)
+    }
+  }
+  
+  ##
+  ## LASSO
+  ##
+  
+  derive <- derive %>% 
+            select(all_of(c("short_id", i, adjustmentList[["ageSexRaceBMI"]], protein.vars))) %>% 
+            filter(complete.cases(.))
+  
+  # Create lasso models using the derivation sample
+  lasso.exercise.models[[i]] <- lasso(outcome=i, predictors=protein.vars, forcedAdjustments=adjustmentList[["ageSexRaceBMI"]], input_data = derive %>% select(!short_id))
+  
+  # pull out the coefficients for the proteins
+  temp <- data.frame(as.matrix(coef(lasso.exercise.models[[i]]$finalModel, lasso.exercise.models[[i]]$bestTune$lambda))) %>% rownames_to_column(var="AptName")
+  coef.vector <- as.vector(temp$s1)[-c(1:5)]
+  
+  
+  # calculate & store the derivation samples lasso scores
+  
+  lasso.scores.derive[[i]] <- data.frame(short_id = derive$short_id,
+                                         s1 = as.matrix(derive %>% select(starts_with("seq"))) %*% coef.vector
+  )
+  
+  validate <- validate %>% 
+              select(all_of(c("short_id", i, adjustmentList[["ageSexRaceBMI"]], protein.vars))) %>% 
+              filter(complete.cases(.))
+  
+  # calculate & store the validation samples lasso scores
+  lasso.scores.validate[[i]] <- data.frame(short_id = validate$short_id,
+                                           s1 = as.matrix(validate %>% select(starts_with("seq"))) %*% coef.vector
+  )
+  
+  # removed variables used in the loop
+  rm(derive); rm(validate); rm(trainIndex); rm(dataForModelsSubset);
+}
+
+stopImplicitCluster()
+```
+
+## Lambda check
+For the G22DURTN models
+
+minimum lambda search grid
+```{r}
+min(lasso.exercise.models$G22DURTN$pred$lambda)
+```
+
+maximum lambda search grid
+```{r}
+max(lasso.exercise.models$G22DURTN$pred$lambda)
+```
+
+optimal lambda
+```{r}
+lasso.exercise.models$G22DURTN$bestTune$lambda
+```
+
+# Table 1 compare derive/validate by G22DURTN
+```{r}
+table1data <- table1data %>% mutate(derive = case_when(short_id %in% derivationSubjectList[["G22DURTN"]] ~ "Derivation",
+                                                       short_id %in% validationSubjectList[["G22DURTN"]] ~ "Validation"))
+gtsummary::tbl_summary(table1data,
+                       include = all_of(c(adjustmentList[["ageSexRaceBMI"]], exercise.vars, "y25cumulativeLSS")),
+                       by="derive",
+                       statistic = list(all_continuous() ~  "{median} ({p25}, {p75}); {p_miss}%", all_categorical() ~ "{n} ({p}%); {p_miss}%"),
+                       missing = "no") %>%
+  add_overall() %>%
+  add_p()
+
+
+```
+
+# Output Marty and LASSO coefs
+
+```{r}
+openxlsx::write.xlsx(marty.output.validate[["ageSexRaceBMI"]], file="fitness_lm_ageSexRaceBMI_validation.xlsx")
+openxlsx::write.xlsx(marty.output.derive[["ageSexRaceBMI"]], file="fitness_lm_ageSexRaceBMI_derivation.xlsx")
+
+lasso.coefs <- NULL
+
+for(i in names(lasso.exercise.models)){
+  temp <- data.frame(as.matrix(coef(lasso.exercise.models[[i]]$finalModel, lasso.exercise.models[[i]]$bestTune$lambda))) %>% rownames_to_column(var="AptName")
+  colnames(temp)[colnames(temp)=="s1"] <-i
+  lasso.coefs[[i]] <- temp
+  
+  rm(temp)
+}
+
+lasso.coefs <- plyr::join_all(lasso.coefs, by="AptName")
+lasso.coefs <- lasso.coefs %>% left_join(protein.dictionary %>% select(AptName, UniProt, EntrezGeneSymbol, TargetFullName)) %>% relocate(UniProt, EntrezGeneSymbol, TargetFullName, .after = AptName)
+```
+
+How many proteins in the LASSO models?
+```{r}
+lasso.coefs %>% filter(!is.na(UniProt)) %>% summarise(G22DURTN = sum(G22DURTN!=0))
+```
+
+
+
+
+
+# Upset plot of Marty's
+## FDR on derivation then validate samples
+```{r}
+for(i in names(marty.output.derive)){
+  for(j in names(marty.output.derive[[i]])){
+    # BH fdr on all derivation
+    marty.output.derive[[i]][[j]] <- marty.output.derive[[i]][[j]] %>% 
+                                     mutate(fdr = p.adjust(p.val, method="BH"))
+    
+    derive.sig <- marty.output.derive[[i]][[j]] %>% 
+                  filter(fdr<0.05) %>% pull(AptName)
+   
+    # BH fdr in validation on those that passed fdr in the derivation
+    marty.output.validate[[i]][[j]] <- marty.output.validate[[i]][[j]] %>%
+                                       left_join(marty.output.validate[[i]][[j]] %>%
+                                                 filter(AptName %in% derive.sig) %>%
+                                                 mutate(fdr = p.adjust(p.val, method="BH")) %>%
+                                                 select(AptName, fdr),
+                                                 by="AptName")
+    
+    rm(derive.sig)
+  }
+}
+```
+
+## compare beta from derive and validate marty
+```{r}
+plot.list <- NULL
+
+for(i in names(marty.output.derive[["ageSexRaceBMI"]])){
+  derive <- marty.output.derive[["ageSexRaceBMI"]][[i]]
+  validate <- marty.output.validate[["ageSexRaceBMI"]][[i]]
+  
+  compare <- derive %>% left_join(validate, by=c("AptName", "UniProt", "EntrezGeneSymbol", "TargetFullName"))
+  
+  compare <- compare %>% mutate(d = densCols(beta.x, beta.y, colramp = colorRampPalette(rev(rainbow(10, end = 4/6)))))
+  
+  plot.list[[i]] <- ggplot(compare, aes(x=beta.x, y=beta.y, label=EntrezGeneSymbol)) +
+                      geom_point(aes(col=d)) +
+                      scale_color_identity() +
+                      # geom_text_repel(size=2, colour="black", max.overlaps = 10) +
+                      ggpubr::stat_cor(cor.coef.name = "R") +
+                      xlab("Beta from derivation sample") +
+                      ylab("Beta from validation sample") +
+                      labs(title = outcome.key$outcome_new[outcome.key$outcome==i]) +
+                      theme_bw() +
+                      guides(size=FALSE,
+                             color=guide_legend(title = ""))
+}
+plot.list[[i]]
+cowplot::plot_grid(plotlist = plot.list, ncol = 1)
+ggsave(filename = "betaCompare_fitness.pdf", device = "pdf", width = 6, height = 9)
+```
+
+`
+
+# what is the % variation explained by concurrent Y25 BMI, age, sex, race, PCE risk, LSS score
+
+For both parent phenotypes PA and CRF, individual proteins and then scores
+
+First build our data frame we need for this.
+```{r}
+# adjustmentList[["ageSexRaceBMI_PCE_LSS"]] <- c(adjustmentList[["ageSexRaceBMI"]], "cvd_p", "CVHBHI25")
+adjustmentList[["full"]] <- c("EX8_AGE",
+                              "SEX",
+                              "RACE",
+                              "H20BMI",
+                              "H02CSAVG",
+                              "H02CDAVG",
+                              "bpmed8",
+                              "diab8",
+                              "ltsmk25",
+                              "HL7GFR",
+                              "HL1CHOL",
+                              "HL1HDL")
+
+
+dataForModels <- cardia.data.outliers.removed %>%
+                 select(all_of(c("short_id",
+                                 adjustmentList[["full"]],
+                                 exercise.vars,
+                                "CVHBHI25",
+                                "y25cumulativeLSS",
+                                "y25cumulativePA"))) %>%
+                 left_join(CARDIA_Y25_Final_Proteomics_CVfiltered_log, by="short_id")
+
+# look at distributions of PCE score, LSS score and cumulative LSS
+# hist(dataForModels$cvd_p) #log transform this
+hist(dataForModels$CVHBHI25)
+hist(dataForModels$y25cumulativeLSS)
+hist(dataForModels$y25cumulativePA)
+
+# there is one observation of cumulative PA = 0. will set to NA as it is a clear outlier
+dataForModels$y25cumulativePA[dataForModels$y25cumulativePA==0] <- NA
+hist(dataForModels$y25cumulativePA)
+
+```
+
+
+# Examine LASSO model fit
+
+look at the r2 in the hold out CV folds
+```{r}
+r2 <- tibble(outcome=character(),
+             r2=double())
+
+for(i in names(lasso.exercise.models)){
+  r2 <- r2 %>% add_row(outcome=i,
+                 r2=lasso.exercise.models[[i]][["resample"]][["Rsquared"]])
+}
+
+r2 <- r2 %>% left_join(outcome.key, by="outcome")
+
+ggplot(r2, aes(y=outcome, x=r2)) +
+  geom_boxplot() +
+  theme_bw() +
+  ylab(expression(R^2)) +
+  xlab("") +
+  theme(axis.text.x = element_text(angle=45, vjust=0.5, hjust=1)) +
+  labs(title = "LASSO model fit",
+       subtitle = "R2 from hold-out folds in cross-validation")
+ggsave(filename = "lasso_r2_cvHoldOuts.pdf", device = "pdf", height = 4, width = 7)
+```
+
+A: Plot the derive and validate LASSO scores (without the covariates) against the parent phenotype; list N for each subset in the title.
+```{r}
+lasso.fit.plots <- NULL
+for(i in c("G22DURTN")){
+  
+  score <- paste0(i,"_score")
+  n <- sum(!is.na(dataForModels[[score]]))
+  
+  lasso.fit.plots[[i]]  <- ggpubr::ggscatter(dataForModels %>% filter(!short_id %in% derivationSubjectList$G22DURTN), 
+                                              x=score, 
+                                              y="G22DURTN",
+                                              size = 0.5,
+                                              cor.coef = TRUE, 
+                                              cor.method = "spearman",
+                                              xlab=outcome.key$outcome_new[outcome.key$outcome==score],
+                                              ylab="ETT Time",
+                                              title = paste("Number of observations:", n),
+                                              cor.coeff.args = list(cor.coef.name = expression(rho)))
+}
+
+cowplot::plot_grid(plotlist = lasso.fit.plots, ncol = 2)
+ggsave(file="lasso_fit_plots_validation.pdf", device = "pdf", height = 4, width = 8)
+```
+Make this plot for the derivation samples
+```{r}
+
+scores.derive.wide <- bind_rows(lasso.scores.derive, .id = "id") %>% 
+                        pivot_wider(names_from = "id", values_from = "s1") %>%
+                        select(contains(c("short_id", "G22DURTN", "soren")))
+
+scores.derive.wide[,-1] <- scale(scores.derive.wide[,-1])
+
+colnames(scores.derive.wide)[-1] <- paste0(colnames(scores.derive.wide)[-1], "_score") 
+
+
+dataForModels <- dataForModels %>% select(!contains("_score")) %>% left_join(scores.derive.wide, by="short_id")
+
+lasso.fit.plots <- NULL
+for(i in c("G22DURTN")){
+  
+  score <- paste0(i,"_score")
+  n <- sum(!is.na(dataForModels[[score]]))
+  
+  lasso.fit.plots[[i]]  <- ggpubr::ggscatter(dataForModels %>% filter(short_id %in% derivationSubjectList$G22DURTN), 
+                                              x=score, 
+                                              y="G22DURTN",
+                                              size = 0.5,
+                                              cor.coef = TRUE, 
+                                              cor.method = "spearman",
+                                              xlab=outcome.key$outcome_new[outcome.key$outcome==score],
+                                              ylab="ETT Time",
+                                              title = paste("Number of observations:", n),
+                                              cor.coeff.args = list(cor.coef.name = expression(rho)))
+}
+
+cowplot::plot_grid(plotlist = lasso.fit.plots, ncol = 2)
+ggsave(file="lasso_fit_plots_derivation.pdf", device = "pdf", height = 4, width = 8)
+```
+
+B: Show distribution of the score against sex, race, BMI in the entire dataset (can use smoothscatter for the BMI), overlay density
+```{r}
+score.vars <- c("G22DURTN_score")
+
+scores.derive.long <- scores.derive.wide %>% pivot_longer(cols = contains("_score"), names_to = "fitness", values_to = "score") %>% drop_na()
+scores.validate.long <- scores.validate.wide %>% pivot_longer(cols = contains("_score"), names_to = "fitness", values_to = "score") %>% drop_na()
+
+
+all.scores <- scores.derive.long %>% 
+              bind_rows(scores.validate.long) %>% 
+              pivot_wider(names_from = "fitness", values_from = "score")
+
+dataForPlots <- cardia.data.outliers.removed %>% 
+                 select(all_of(c("short_id", adjustmentList$ageSexRaceBMI))) %>% 
+                 left_join(all.scores, by="short_id")
+```
+Sex
+```{r}
+plot.list <- NULL
+for(i in score.vars){
+  plot.list[[i]] <- ggplot(dataForPlots, aes_string(x=i, y="..count..", color="SEX", fill="SEX")) +
+                      geom_histogram(position = "identity", alpha=0.4) +
+                      ggsci::scale_fill_npg() +
+                      ggsci::scale_color_npg() +
+                      xlab(outcome.key$outcome_new[outcome.key==i]) +
+                      theme_bw()
+}
+cowplot::plot_grid(plotlist = plot.list, ncol = 1)
+ggsave(filename = "fitnessScoresBySex.pdf", device = "pdf", height = 9, width = 6)
+```
+Race
+```{r}
+plot.list <- NULL
+for(i in score.vars){
+  plot.list[[i]] <- ggplot(dataForPlots, aes_string(x=i, y="..count..", color="RACE", fill="RACE")) +
+                      geom_histogram(position = "identity", alpha=0.4) +
+                      ggsci::scale_fill_npg() +
+                      ggsci::scale_color_npg() +
+                      xlab(outcome.key$outcome_new[outcome.key==i]) +
+                      theme_bw()
+}
+cowplot::plot_grid(plotlist = plot.list, ncol = 1)
+ggsave(filename = "fitnessScoresByRace.pdf", device = "pdf", height = 9, width = 6)
+```
+BMI
+```{r}
+plot.list <- NULL
+for(i in score.vars){
+  
+  dataForPlots <- dataForPlots %>% mutate(d = densCols(dataForPlots$H20BMI, dataForPlots[[i]], colramp = colorRampPalette(rev(rainbow(10, end = 4/6)))))
+  
+  plot.list[[i]] <- ggplot(dataForPlots, aes_string(x="H20BMI", y=i)) +
+                      geom_point(aes(col=d)) +
+                      scale_color_identity() +
+                      ggpubr::stat_cor(method = "spearman", cor.coef.name="rho", label.x.npc = "right", hjust=1) +
+                      xlab("BMI") +
+                      ylab("Protein score") +
+                      labs(title = outcome.key$outcome_new[outcome.key$outcome==i]) +
+                      theme_bw() +
+                      guides(size=FALSE,
+                             color=guide_legend(title = ""))
+}
+cowplot::plot_grid(plotlist = plot.list, ncol = 1)
+ggsave(filename = "fitnessScoresByBMI.pdf", device = "pdf", height = 9, width = 6)
+```
+
+
+# Heritage delta data
+
+
+```{r}
+heritageFile <- "/Users/perry/Library/CloudStorage/OneDrive-VUMC/Research/CARDIA/HERITAGE Data/HERITAGE_proteomics_somalogic.xlsx"
+heritageDeltaFile <- "/Users/perry/Library/CloudStorage/OneDrive-VUMC/Research/CARDIA/HERITAGE Data/jci.insight.165867.sdt1-10.xlsx"
+
+heritage.delta.data <- readxl::read_excel(heritageDeltaFile, sheet = 1, skip = 2)
+heritage.data <- readxl::read_excel(heritageFile, sheet = 1, skip = 3)
+heritage.soma.dictionary <- readxl::read_excel(heritageFile, sheet = 2)
+
+
+translation.dictionary <- heritage.soma.dictionary %>% 
+                          left_join(protein.dictionary %>% select(AptName, UniProt), by="UniProt", multiple = "any") %>%
+                          filter(!duplicated(AptName)) %>%
+                          filter(AptName %in% colnames(CARDIA_Y25_Final_Proteomics_CVfiltered_log))
+
+
+temp <- translation.dictionary %>% left_join(marty.output.derive$ageSexRaceBMI$G22DURTN %>% select(AptName, beta, p.val, fdr), by="AptName") %>% left_join(heritage.delta.data, by="UniProt")
+
+a <- temp %>% filter(duplicated(AptName)) %>% pull(AptName)
+temp %>% filter(AptName %in% a)
+# so all the duplicated aptamers here have the same directionality and are all FDR+ in heritage. I will drop the duplicated aptamers
+
+temp <- temp %>% filter(!duplicated(AptName))
+
+temp <- temp %>% mutate(d = densCols(temp$beta, temp$`log(10) Fold Change`, colramp = colorRampPalette(rev(rainbow(10, end = 4/6)))))
+temp <- temp %>% mutate(Concordance = ifelse(sign(beta)==sign(`log(10) Fold Change`), as.character(sign(beta)), "Discordant"))
+temp$Concordance <- case_when(temp$Concordance=="-1" ~ "Negative",
+                           temp$Concordance=="1" ~ "Positive",
+                           temp$Concordance=="Discordant" ~ "Discordant")
+```
+
+List the positively concordant proteins
+```{r}
+rmarkdown::paged_table(temp %>% filter(fdr<0.05 & Concordance=="Positive"))
+```
+List the negatively concordant proteins
+```{r}
+rmarkdown::paged_table(temp %>% filter(fdr<0.05 & Concordance=="Negative"))
+```
+
+```{r}
+# temp$EntrezGeneSymbol[temp$Concordance=="Discordant"] <- NA
+
+temp <- temp %>% mutate(size = (abs(temp$beta) + abs(temp$`log(10) Fold Change`))/2)
+temp$size[temp$Concordance=="Discordant"] <- min(temp$size, na.rm = TRUE)
+```
+
+
+# Heatmap 50 proteins ranked by abs(log10 fold change) and their associations with CMD traits in CARDIA.
+
+```{r, fig.width=12, fig.height=12}
+heatmap_proteins <- temp %>% 
+                    filter(Concordance!="Discordant") %>%
+                    mutate(protein.rank = rank(-abs(`log(10) Fold Change`))) %>% 
+                    filter(protein.rank<=50) %>% 
+                    pull(AptName)
+
+heatmap_proteins_labels <- temp %>% 
+                    filter(Concordance!="Discordant") %>%
+                    mutate(protein.rank = rank(-abs(`log(10) Fold Change`))) %>% 
+                    filter(protein.rank<=50) %>% 
+                    pull(`Entrez Gene Symbol`)
+
+cmd_vars <- c("Y25cactot", "Y25aactot", "HR3VISFATVOL", "HR3SBCTFATVOL",
+              "H0YHBA1C", "HL1CHOL", "HL1HDL", "LVmass2dHtIndex_v8", "HELL4CHAOP",
+              "y25cumulativeLSS", "CVHBHI25")
+
+cmd_vars_labels <- c("CAC", "AAC", "VAT", "SAT", "HbA1c", "Total cholesterol", "HDL", "LV mass index", "LV GLS", "Cumulative AHA LS7", "AHA LS7")
+
+heatmap.data <- cardia.data.outliers.removed %>% 
+                filter(short_id %in% validationSubjectList$G22DURTN) %>%
+                select(short_id, all_of(cmd_vars)) %>% 
+                left_join(CARDIA_Y25_Final_Proteomics_CVfiltered_log %>% select(short_id, all_of(heatmap_proteins)), by="short_id")
+
+Hmisc::hist.data.frame(heatmap.data %>% select(all_of(cmd_vars)))
+heatmap.data$Y25aactot <- log(heatmap.data$Y25aactot+1)
+heatmap.data$Y25cactot <- log(heatmap.data$Y25cactot+1)
+heatmap.data$HR3VISFATVOL <- log(heatmap.data$HR3VISFATVOL)
+heatmap.data$H0YHBA1C <- log(heatmap.data$H0YHBA1C)
+heatmap.data$HL1HDL <- log(heatmap.data$HL1HDL)
+heatmap.data$LVmass2dHtIndex_v8 <- log(heatmap.data$LVmass2dHtIndex_v8)
+
+heatmap.data[,heatmap_proteins] <- scale(heatmap.data[,heatmap_proteins])
+
+
+corr <- Hmisc::rcorr(as.matrix(heatmap.data[,-1]))
+
+rownames(corr$r) <- c(cmd_vars_labels, heatmap_proteins_labels)
+colnames(corr$r) <- c(cmd_vars_labels, heatmap_proteins_labels)
+
+rownames(corr$P) <- c(cmd_vars_labels, heatmap_proteins_labels)
+colnames(corr$P) <- c(cmd_vars_labels, heatmap_proteins_labels)
+
+rownames(corr$n) <- c(cmd_vars_labels, heatmap_proteins_labels)
+colnames(corr$n) <- c(cmd_vars_labels, heatmap_proteins_labels)
+
+
+
+# using ComplexHeatmap
+log10fc <- temp %>% 
+            filter(Concordance!="Discordant") %>%
+            mutate(protein.rank = rank(-abs(`log(10) Fold Change`))) %>% 
+            filter(protein.rank<=50) %>% 
+            pull(`log(10) Fold Change`)
+
+cardia.beta.vector <- temp %>% 
+            filter(Concordance!="Discordant") %>%
+            mutate(protein.rank = rank(-abs(`log(10) Fold Change`))) %>% 
+            filter(protein.rank<=50) %>% 
+            pull(beta)
+
+col_anno = circlize::colorRamp2(c(-max(abs(c(log10fc, cardia.beta.vector))), 0, max(c(cardia.beta.vector,abs(log10fc)))), c("forestgreen", "white", "darkorange"))
+
+row_annotation <- HeatmapAnnotation(training = log10fc,
+                                    cardia.beta = cardia.beta.vector,
+                                   which="row",
+                                   col=list(training=col_anno,
+                                            cardia.beta=col_anno),
+                                   annotation_legend_param = list(training=list(title = " "),
+                                                                  cardia.beta=list(title=expression(beta))),
+                                   annotation_label = c("log10 FC with training",
+                                                        expression(ETT~beta)),
+                                   show_legend = c(TRUE, FALSE))
+
+p_annotate <- corr$P[heatmap_proteins_labels, cmd_vars_labels]
+p_annotate <- t(apply(p_annotate, 1, function(x) p.adjust(x, method = "BH")))
+dim(p_annotate)
+dim(corr$r[heatmap_proteins_labels,cmd_vars_labels])
+
+pdf("proteins_cmd_heatmap.pdf", height = 11, width=7)
+draw(Heatmap(corr$r[heatmap_proteins_labels,cmd_vars_labels],
+        right_annotation = row_annotation,
+        show_row_dend = FALSE,
+        show_column_dend = FALSE,
+        clustering_distance_rows = "manhattan",
+        cell_fun = function(j,i,x,y,width,height,fill) {gb = textGrob("*")
+                                                              gb_w = convertWidth(grobWidth(gb), "mm")
+                                                                gb_h = convertHeight(grobHeight(gb), "mm")
+                                                                grid.text(case_when(p_annotate[i,j]<0.05 ~ "*",
+                                                                                 p_annotate[i,j]>=0.05 ~ ""), x, y-gb_h*0.5+gb_w*0.4)},
+        heatmap_legend_param = list(title="Correlation",
+                                    legend_direction="horizontal",
+                                    title_position="topcenter")
+),
+        heatmap_legend_side = "bottom",
+        annotation_legend_side = "right",
+        legend_grouping="original")
+dev.off()
+```
+
+# Save output
+
+```{r}
+filesToMd5 <- c("cardia_exercise.Rdata",
+                "fitness_lm_ageSexRaceBMI_validation.xlsx",
+                "fitness_lm_ageSexRaceBMI_derivation.xlsx",
+                "fitness_proteins_bioinformatics.csv",
+                "exercise_lasso_coefs.csv")
+
+
+save.image(file="cardia_exercise.Rdata")
+
+dataFileInfo=data.frame(
+  File=basename(filesToMd5),
+  md5=tools::md5sum(filesToMd5)
+)
+
+knitr::kable(dataFileInfo)
+
+sessionInfo()
+```
+
