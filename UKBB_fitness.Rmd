@@ -1,0 +1,2127 @@
+---
+title: "UKBB_fitness"
+author: "Andrew Perry/Ravi Shah/Eric-Farber-Eger"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    theme: cerulean
+    toc: yes
+    toc_depth: 3
+    number_sections: false
+    toc_float: true
+    toc_collapsed: true
+    code_folding: hide
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Libraries
+```{r}
+# install.packages("gtsummary")
+# install.packages("survival")
+# install.packages("ggplot2")
+# install.packages("Hmisc")
+# install.packages("tidyverse")
+# install.packages("dplyr")
+# install.packages("UpSetR")
+# install.packages("missMDA")
+# install.packages("ggcorrplot")
+# install.packages("emmeans")
+# install.packages("ggsci")
+# install.packages("ggpubr")
+# install.packages("circlize")
+# install.packages("cowplot")
+# install.packages("metR")
+# install.packages("nricens")
+    
+
+library(tidyverse)
+library(UpSetR)
+library(missMDA)
+library(ggcorrplot)
+library(dplyr)
+library(gtsummary)
+library(survival)
+library(ggplot2)
+library(Hmisc)
+library(emmeans)
+library(ggsci)
+library(ggpubr)
+library(circlize)
+library(RColorBrewer)
+library(cowplot)
+library(metR)
+library(nricens)
+```
+
+
+# Import data
+
+Here, we load these files:  
+(1) the olink assay. 
+(2) total CARDIA overlaps (Soma7K to Olink). 
+(4) the recalibration files. 
+(5) Olink LOD data.  
+(6) outcomes, covariates and phecode data
+(7) Phecode descriptions
+
+
+```{r}
+olink_assay <- read.delim("/mnt/project/Bulk/Protein biomarkers/Olink/helper_files/olink_assay.dat")
+lod.na <- read.csv("/mnt/project/proteomics_data/analysis_output/instance0_assays_with_counts_na_under_lod.csv")
+CARDIA.UKBB.overlaps <- read.csv("/mnt/project/Codes/ASP/CARDIA_UKBB_overlapDictionary.csv")
+cardia.recal.coefs <- read.csv("/mnt/project/Codes/ASP/UKBB_fitness_recal_coefs.csv")
+
+outcomes <- read.csv("/mnt/project/analysis_ready/coded_death_filtered_phecodes_with_tte_and_censors.csv")
+labeled_covariates <- read.csv("/mnt/project/analysis_ready/labeled_covariates.csv")
+prs_score_and_pcs <- read.csv("/mnt/project/analysis_ready/prs_score_and_pcs.csv")
+phecode_descriptions <- read.csv("/mnt/project/analysis_ready/phecode_descriptions.csv")
+
+comorbidity_exclusions <- read.csv("/mnt/project/analysis_ready/non_cancer_self_reported_conditions_in_columns.csv")
+vasc_problems_by_doc <- read.csv("/mnt/project/analysis_ready/vascular_problems_diagnosed_by_doctor_in_columns.csv")
+serious_conditions <- read.csv("/mnt/project/analysis_ready/other_serious_condition_diagnosed_by_doctor.csv")
+exclude <- read.csv("/mnt/project/Codes/ASP/Excluded_Participants.csv")
+
+filesToMd5 <- c("/mnt/project/Bulk/Protein biomarkers/Olink/helper_files/olink_assay.dat",
+                "/mnt/project/proteomics_data/analysis_output/instance0_assays_with_counts_na_under_lod.csv",
+                "/mnt/project/Codes/ASP/CARDIA_UKBB_overlapDictionary.csv",
+                "/mnt/project/Codes/ASP/UKBB_fitness_recal_coefs.csv",
+                "/mnt/project/analysis_ready/coded_death_filtered_phecodes_with_tte_and_censors.csv",
+                "/mnt/project/analysis_ready/labeled_covariates.csv",
+                "/mnt/project/analysis_ready/prs_score_and_pcs.csv",
+                "/mnt/project/analysis_ready/phecode_descriptions.csv",
+                "/mnt/project/Codes/ASP/Excluded_Participants.csv",
+                "/mnt/project/analysis_ready/non_cancer_self_reported_conditions_in_columns.csv",
+                "/mnt/project/analysis_ready/vascular_problems_diagnosed_by_doctor_in_columns.csv",
+                "/mnt/project/analysis_ready/other_serious_condition_diagnosed_by_doctor.csv")
+
+
+
+dataFileInfo=data.frame(
+  File=basename(filesToMd5),
+  md5=tools::md5sum(filesToMd5)
+)
+
+knitr::kable(dataFileInfo)
+```
+
+## Read in Olink Proteomics Data 
+
+"Instances". 
+0 Initial assessment visit (2006-2010) at which participants were recruited and consent given. 
+1	First repeat assessment visit (2012-13). 
+2	Imaging visit (2014+). 
+3	First repeat imaging visit (2019+). 
+
+INSTANCE 0
+```{r}
+setwd("/mnt/project/proteomics_data/")
+
+filesToMd5 <- grep("olink_instance_0", dir(), value = TRUE)
+
+dataFileInfo=data.frame(
+  File=basename(filesToMd5),
+  md5=tools::md5sum(filesToMd5)
+)
+
+knitr::kable(dataFileInfo)
+
+# Please put in MD5 CHECK SUM statements here, you can do it using loops if you want
+polink1 <- read.csv("olink_instance_0_0001_v15_1_93687e2.csv")
+polink2 <- read.csv("olink_instance_0_0002_v15_1_93687e2.csv")
+polink3 <- read.csv("olink_instance_0_0003_v15_1_93687e2.csv")
+polink4 <- read.csv("olink_instance_0_0004_v15_1_93687e2.csv")
+polink5 <- read.csv("olink_instance_0_0005_v15_1_93687e2.csv")
+polink6 <- read.csv("olink_instance_0_0006_v15_1_93687e2.csv")
+
+dim(polink1); dim(polink2)
+olink.instance0 <- merge(polink1, polink2, by="eid") 
+dim(olink.instance0)
+olink.instance0 <- merge(olink.instance0, polink3, by="eid")
+dim(olink.instance0)
+olink.instance0 <- merge(olink.instance0, polink4, by="eid")
+dim(olink.instance0)
+olink.instance0 <- merge(olink.instance0, polink5, by="eid")
+dim(olink.instance0)
+olink.instance0 <- merge(olink.instance0, polink6, by="eid")
+dim(olink.instance0)
+rm(polink1, polink2, polink3, polink4, polink5, polink6)
+```
+
+# Exclude participants
+
+```{r}
+table(exclude$X1001858 %in% labeled_covariates$eid)
+table(exclude$X1001858 %in% olink.instance0$eid)
+table(exclude$X1001858 %in% outcomes$eid)
+table(exclude$X1001858 %in% prs_score_and_pcs$eid)
+
+dim(labeled_covariates)
+labeled_covariates <- labeled_covariates %>% filter(!eid %in% exclude$X1001858)
+dim(labeled_covariates)
+
+dim(olink.instance0)
+olink.instance0 <- olink.instance0 %>% filter(!eid %in% exclude$X1001858)
+dim(olink.instance0)
+
+dim(outcomes)
+outcomes <- outcomes %>% filter(!eid %in% exclude$X1001858)
+dim(outcomes)
+
+dim(prs_score_and_pcs)
+prs_score_and_pcs <- prs_score_and_pcs %>% filter(!eid %in% exclude$X1001858)
+dim(prs_score_and_pcs)
+```
+
+# Calculate scores in UKBB:  
+
+```{r}
+score.coefs <- NULL
+cardia.recal.coefs <- cardia.recal.coefs %>% filter(AptName!="(Intercept)") %>% select(!contains("soren"))
+
+for(i in colnames(cardia.recal.coefs %>% select(contains("score")))){
+  score.coefs[[i]] <- cardia.recal.coefs %>% 
+                        select(all_of(c(i, "AptName", "Assay", "UniProt", "Panel")))
+  score.coefs[[i]][["s1"]] <- score.coefs[[i]][[i]]
+}
+```
+
+Add in a score for a 21 protein panel
+```{r}
+score.coefs[["G22DURTN_score_restricted_top21"]] <- cardia.recal.coefs %>% 
+                                                    mutate(coef.rank = rank(-abs(G22DURTN_score_restricted))) %>% 
+                                                    mutate(G22DURTN_score_restricted = case_when(coef.rank>21 ~ 0,
+                                                                                                 .default = G22DURTN_score_restricted)) %>%
+                                                    select(all_of(c("G22DURTN_score_restricted", "AptName", "Assay", "UniProt", "Panel"))) %>%
+                                                    rename(G22DURTN_score_restricted_top21 = G22DURTN_score_restricted) %>%
+                                                    mutate(s1 = G22DURTN_score_restricted_top21)
+```
+
+Now we are going to loop over all of these coefficients and calculate the scores
+```{r}
+score.df <- NULL
+i <- names(score.coefs[1])
+for(i in names(score.coefs)){
+  temp.coefs <- score.coefs[[i]] %>% filter(s1!=0)
+  
+  ##
+  ## Now let's map missingness here:
+  ##
+  # Do the names match?
+  length(intersect(colnames(olink.instance0), tolower(temp.coefs$Assay))) 
+  setdiff(tolower(temp.coefs$Assay), colnames(olink.instance0))
+  
+  # Now let's compare the LOD/NA from Eric with what Andrew found as the "best overlap" LASSO:
+  temp.coefs$Assay <- tolower(temp.coefs$Assay)
+  temp <- merge(temp.coefs, 
+                lod.na %>% rename(Assay = assay), by="Assay")
+  print(hist(temp$count_na)); print(summary(temp$count_na))
+  print(hist(temp$percent_na)); print(summary(temp$percent_na))
+  
+  print(hist(temp$count_under_lod)); print(summary(temp$count_under_lod))
+  print(hist(temp$percent_under_lod)); print(summary(temp$percent_under_lod))
+  
+  rm(temp)
+  
+  ##
+  ## Calculate the protein scores in UKBB
+  ##
+  # Define vector of proteins
+  proteins.to.use <- temp.coefs %>% pull(Assay)
+  
+  # Subset proteins: 
+  unimputed.olink.inst0 <- olink.instance0 %>% dplyr::select(eid, all_of(proteins.to.use))
+  rownames(unimputed.olink.inst0) <- unimputed.olink.inst0$eid
+  unimputed.olink.inst0 <- unimputed.olink.inst0 %>% dplyr::select(-eid)
+  
+  # Complete the cases 
+  unimputed.olink.inst0 <- unimputed.olink.inst0[complete.cases(unimputed.olink.inst0),]
+  unimputed.olink.inst0 <- as.data.frame(scale(unimputed.olink.inst0, center=TRUE, scale=TRUE))
+  dim(unimputed.olink.inst0)
+  
+  # Confirm all proteins there
+  intersect(colnames(unimputed.olink.inst0), proteins.to.use) # Should be all, as we had subsetted 
+  
+  # Confirm all scaled
+  summary(apply(unimputed.olink.inst0, 2, mean))
+  summary(apply(unimputed.olink.inst0, 2, sd))
+  
+  # Generate scores: UNIMPUTED
+  dim(unimputed.olink.inst0[,proteins.to.use])
+  dim(as.matrix(temp.coefs$s1))
+  identical(colnames(unimputed.olink.inst0[,proteins.to.use]), tolower(temp.coefs$Assay)) # Ok to dot
+  
+  score.df[[i]] <- data.frame(eid = rownames(unimputed.olink.inst0),
+                              score = as.matrix(unimputed.olink.inst0[,proteins.to.use]) %*% as.matrix(temp.coefs$s1),
+                              z.score = scale(as.matrix(unimputed.olink.inst0[,proteins.to.use]) %*% as.matrix(temp.coefs$s1), center=TRUE, scale=TRUE))
+    
+  rm(temp.coefs, unimputed.olink.inst0)
+}
+```
+
+plot histograms of the scores
+```{r}
+temp <- bind_rows(score.df, .id="score.type")
+score.df <- temp %>% pivot_wider(id_cols = eid, values_from = z.score, names_from = score.type)
+colnames(score.df) <- gsub("coefs_", "", colnames(score.df))
+
+summary(apply(score.df[,-1], 2, function(x) {mean(x, na.rm=TRUE)}))
+summary(apply(score.df[,-1], 2, function(x) {sd(x, na.rm=TRUE)}))
+
+hist.data.frame(score.df[,-1])
+
+# how are the scores correlated with each other?
+pairs(score.df[,-1])
+```
+
+
+
+# Clean the covariates data
+
+First, some of these are blank ("") and not NA like they should be so I will change the blanks to NA
+
+```{r}
+labeled_covariates[labeled_covariates==""] <- NA
+```
+
+## Ethnic background
+
+```{r}
+knitr::kable(table(labeled_covariates$ethnic_background))
+```
+
+I am going to consolidate these ethnic groups similar to what was done in this paper https://academic.oup.com/aje/article/186/9/1026/3883629#
+
+```{r}
+labeled_covariates <- labeled_covariates %>% mutate(new_ethnicity = case_when(ethnic_background == "British" |
+                                                                                ethnic_background == "Irish" |
+                                                                                ethnic_background == "Any other white background" |
+                                                                                ethnic_background == "White" ~ "White",
+                                                                              ethnic_background == "Black or Black British" |
+                                                                                ethnic_background == "African" |
+                                                                                ethnic_background == "Caribbean" |
+                                                                                ethnic_background == "Any other Black background" ~ "Black",
+                                                                              ethnic_background == "White and Black Caribbean" |
+                                                                                ethnic_background == "White and Black African" |
+                                                                                ethnic_background == "White and Asian" |
+                                                                                ethnic_background == "Mixed" |
+                                                                                ethnic_background == "Any other mixed background" ~ "Mixed",
+                                                                              ethnic_background == "Any other Asian background" |
+                                                                                ethnic_background == "Asian or Asian British" |
+                                                                                ethnic_background == "Bangladeshi" |
+                                                                                ethnic_background == "Chinese" |
+                                                                                ethnic_background == "Indian" |
+                                                                                ethnic_background == "Pakistani" ~ "Asian",
+                                                                              .default = "Unknown-other"))
+
+table(labeled_covariates$ethnic_background, labeled_covariates$new_ethnicity)
+```
+
+
+## Smoking status
+
+```{r}
+knitr::kable(table(labeled_covariates$smoking_status))
+```
+
+I will lump "Prefer not to answer" and "Never" together for our analysis
+
+```{r}
+labeled_covariates <- labeled_covariates %>% mutate(newSmoking = case_when(smoking_status == "Never" |
+                                                                             smoking_status == "Prefer not to answer" ~ "Never_NoAnswer",
+                                                                           .default = smoking_status))
+
+table(labeled_covariates$smoking_status, labeled_covariates$newSmoking)
+```
+
+## Alochol
+
+```{r}
+knitr::kable(table(labeled_covariates$alcohol_drinker_status))
+```
+
+
+I will lump "Prefer not to answer" and "Never" together for our analysis
+
+```{r}
+labeled_covariates <- labeled_covariates %>% mutate(newAlcohol = case_when(alcohol_drinker_status == "Never" |
+                                                                             alcohol_drinker_status == "Prefer not to answer" ~ "Never_NoAnswer",
+                                                                           .default = alcohol_drinker_status))
+
+table(labeled_covariates$alcohol_drinker_status, labeled_covariates$newAlcohol)
+```
+
+
+## Diabetes
+```{r}
+knitr::kable(table(labeled_covariates$diabetes_diagnosed_by_doctor))
+```
+
+
+I will lump "Do not know" and "Never" together for our analysis
+
+```{r}
+labeled_covariates <- labeled_covariates %>% mutate(newDiabetes = case_when(diabetes_diagnosed_by_doctor == "Do not know" |
+                                                                             diabetes_diagnosed_by_doctor == "Prefer not to answer" ~ "DontKnow_NoAnswer",
+                                                                           .default = diabetes_diagnosed_by_doctor))
+
+table(labeled_covariates$diabetes_diagnosed_by_doctor, labeled_covariates$newDiabetes)
+```
+
+# Define adjustments
+
+
+```{r}
+adjustmentList = list(unadjusted = NULL,
+                      ageSexRace = c("age_at_assessment", 
+                                     "sex", 
+                                     "new_ethnicity"),
+                      full = c("age_at_assessment", 
+                               "sex", 
+                               "new_ethnicity", 
+                               "bmi", 
+                               "ldl", 
+                               "systolic_bp", 
+                               "newDiabetes", 
+                               "townsend_deprivation_index",
+                               "newSmoking",
+                               "newAlcohol"))
+
+adjustmentList$full2 <- c("whole_body_fat_mass", setdiff(adjustmentList$full2, "bmi"))
+```
+
+# Define varnames for phecodes
+
+```{r}
+phecode_descriptions <- phecode_descriptions %>% 
+                        mutate(varname = case_when(phecode>=100 ~ paste0("X", phecode),
+                                                   phecode<100 ~ paste0("X0", phecode)))
+
+phecodes_to_remove <- c("X010", "X395", "X427.4", "X440", "X442", "X481", "X743", "X805", "X740", "X585", "X800", "X414", "X480", "X496")
+
+phecode_key <- phecode_descriptions %>% 
+               filter(varname %in% colnames(outcomes) & varname != "X642") %>%
+               filter(!varname %in% phecodes_to_remove)
+```
+
+# Create dataset for models
+
+```{r}
+score.names <- c("G22DURTN_score_restricted", "G22DURTN_score_restricted_top21")
+score.df$eid <- as.numeric(score.df$eid)
+dataForModels <- score.df %>%
+                 select(all_of(c("eid", score.names))) %>%
+                 drop_na() %>%
+                 left_join(labeled_covariates %>% select(eid, all_of(unique(unlist(adjustmentList)))), by="eid") %>%
+                 left_join(outcomes, by="eid")
+```
+
+## Check distributions
+
+```{r}
+hist.data.frame(dataForModels[,c(score.names, unique(unlist(adjustmentList)))])
+```
+
+# Examine the relationship of protein score of fitness with our adjustments
+
+## age
+
+Compare age across decades
+
+```{r}
+# using box plots
+temp <- dataForModels %>% mutate(age_bin = case_when(age_at_assessment<50 ~ "40-49",
+                                                     age_at_assessment>=50 & age_at_assessment<60 ~ "50-59",
+                                                     age_at_assessment>=60 ~ "60-70"))
+
+ggplot(temp %>% drop_na(age_bin), aes(x=age_bin, y=G22DURTN_score_restricted, color = age_bin)) +
+        geom_boxplot() +
+        ggsci::scale_color_lancet() +
+        stat_compare_means(show.legend = FALSE, bracket.size = 0.2) +
+        ylim(NA, 2) +
+        ylab("Protein score of fitness") +
+        xlab("Age category (years)") +
+        theme_bw() +
+        guides(color="none")
+
+# scatter plots
+temp <- dataForModels %>% 
+                 mutate(d = densCols(dataForModels$age_at_assessment, dataForModels$G22DURTN_score_restricted, colramp = colorRampPalette(rev(rainbow(10, end = 4/6)))))
+
+ggplot(temp, aes(x=age_at_assessment, y=G22DURTN_score_restricted)) +
+  geom_point(aes(col=d)) +
+  scale_color_identity() +
+  ggpubr::stat_cor(cor.coef.name = "rho", label.x.npc = "right", hjust = 1, method = "spearman") +
+  labs(title = paste("Correlation of age with fitness score"),
+       y = "Protein score of fitness",
+       x = "Age") +
+  theme_bw() +
+  guides(color=guide_legend(title = ""))
+
+ggsave("fitness_score_by_age_ukbb.pdf", width = 4, height = 3)
+```
+
+## sex
+
+```{r}
+ttest <- compare_means(as.formula(paste("G22DURTN_score_restricted ~ sex")), data = dataForModels, method = "t.test")
+ttest$p.format
+
+
+
+colorset <- c("Female" = "darkorange", "Male" = "forestgreen")
+
+ggplot(dataForModels %>% drop_na(sex), aes(x=G22DURTN_score_restricted)) +
+        geom_density(aes(color = sex)) +
+        scale_fill_manual(values=colorset) +
+        scale_colour_manual(values = colorset) +
+        labs(y="Density",
+             x="Protein score of fitness",
+             title="Score by sex in UKBB",
+             subtitle = "t-test, p < 2.2e-16") +
+        theme_bw() +
+        guides(fill=guide_legend(title = "Sex"),
+               color=guide_legend(title = "Sex"))
+ggsave("fitness_score_by_sex_ukbb.pdf", width = 4, height = 3)
+```
+## sex and race
+
+```{r}
+temp <- dataForModels %>% mutate(race = case_when(new_ethnicity == "White" ~ "White",
+                                                 .default = "Non-White"))
+
+ggplot(temp, aes(x=G22DURTN_score_restricted)) +
+  geom_density(aes(colour = sex, linetype = race)) +
+  scale_fill_manual(values=colorset) +
+  scale_colour_manual(values = colorset) +
+  labs(x = "Protein score of fitness",
+       y = "Density",
+       title = "Sex and race score distribution",
+       subtitle = "All UKBB participants") +
+  theme_bw() +
+  guides(color=guide_legend(title = "Sex", order = 1),
+         linetype=guide_legend(title = "Race", order = 2))
+ggsave("score_sexRaceBinary_histos.pdf", width = 4, height = 3)
+
+
+summary(lm(G22DURTN_score_restricted ~ sex, data = temp))
+summary(lm(G22DURTN_score_restricted ~ sex*race, data = temp))
+```
+
+## race
+
+```{r}
+colorset <- c("White" = "firebrick",
+              "Black" = "dodgerblue4",
+              "Asian" = "purple",
+              "Mixed" = "darkorange",
+              "Unknown-other" = "forestgreen")
+
+ggplot(dataForModels %>% drop_na(new_ethnicity), aes(x=new_ethnicity, y=G22DURTN_score_restricted, color = new_ethnicity)) +
+  geom_boxplot() +
+  scale_colour_manual(values = colorset) +
+  # stat_compare_means(comparisons = ) +
+  stat_compare_means(show.legend = FALSE, bracket.size = 0.2) +
+  # ylim(-5,max(c(5,2*length(my_comparisons)))) +
+  labs(title = paste("Relation of race with fitness score"),
+       caption = "p value from anova") +
+  ylab("Protein score of fitness") +
+  xlab("") +
+  theme_bw() +
+  guides(color="none")
+ggsave("fitness_score_by_race_ukbb.pdf", width = 4, height = 3)
+```
+## bmi
+
+```{r}
+# create density variable
+temp <- dataForModels %>% 
+                 mutate(d = densCols(dataForModels$bmi, dataForModels$G22DURTN_score_restricted, colramp = colorRampPalette(rev(rainbow(10, end = 4/6)))))
+
+ggplot(temp, aes(x=bmi, y=G22DURTN_score_restricted)) +
+  geom_point(aes(col=d)) +
+  scale_color_identity() +
+  ggpubr::stat_cor(cor.coef.name = "rho", label.x.npc = "right", hjust = 1, method = "spearman") +
+  # stat_smooth(method = "lm",
+  #             formula = y ~ x,
+  #             geom = "smooth",
+  #             level = 0,
+  #             linetype = "dotted",
+  #             color = "black") +
+  labs(title = paste("Correlation of bmi with fitness score"),
+       y = "Protein score of fitness",
+       x = expression(Body~mass~index~(kg/m^2))) +
+  theme_bw() +
+  guides(color=guide_legend(title = ""))
+ggsave("fitness_score_by_BMI_ukbb.pdf", width = 4, height = 3)
+```
+
+For continuous variables I will do this with scatter plots and correlations
+
+For categorical variables, I will do this with boxplots and t.test/ANOVA
+
+```{r, eval=FALSE}
+# this loops over all of the adjustments and produces heated scatterplots and boxplots with comparisons across all groups
+scoreRelationAdjustmentsPlotList <- NULL
+
+i <- "sex"
+
+for(i in adjustmentList$full){
+
+  # continuous variables make a scatter
+  if(class(dataForModels[[i]]) != "character"){
+    
+    # create density variable
+    dataForModels <- dataForModels %>% 
+                     mutate(d = densCols(dataForModels[[i]], dataForModels[["G22DURTN_score_restricted"]], colramp = colorRampPalette(rev(rainbow(10, end = 4/6)))))
+  
+    scoreRelationAdjustmentsPlotList[[i]] <- 
+      ggplot(dataForModels, aes_string(x=i, y="G22DURTN_score_restricted")) +
+        geom_point(aes(col=d)) +
+        scale_color_identity() +
+        ggpubr::stat_cor(cor.coef.name = "R", label.x.npc = "right", hjust = 1) +
+        labs(title = paste("Correlation of", i, "with fitness score")) +
+        theme_bw() +
+        guides(color=guide_legend(title = ""))
+  }
+  
+  if(class(dataForModels[[i]]) == "character"){
+    
+    ttests <- compare_means(as.formula(paste("G22DURTN_score_restricted ~",i)), data = dataForModels, method = "t.test")
+    my_comparisons <- ttests %>%
+                      dplyr::select(.data$group1, .data$group2) %>%
+                      purrr::transpose() %>%
+                      purrr::modify_depth(1, unlist)
+    
+    my_ref.group <- case_when(i=="sex" ~ "Male",
+                              i=="new_ethnicity" ~ "White",
+                              i=="diabetes_diagnosed_by_doctor" ~ "No",
+                              i=="newSmoking" ~ "Never_NoAnswer",
+                              i=="newAlcohol" ~ "Never_NoAnswer")
+    
+    scoreRelationAdjustmentsPlotList[[i]] <- 
+      ggplot(dataForModels %>% drop_na(i), aes_string(x=i, y="G22DURTN_score_restricted", color = i)) +
+        geom_boxplot() +
+        ggsci::scale_color_lancet() +
+        stat_compare_means(show.legend = FALSE, comparisons = my_comparisons, bracket.size = 0.2) +
+        ylim(-5,max(c(5,2*length(my_comparisons)))) +
+        labs(title = paste("Relation of", i, "with fitness score"),
+             caption = "p value from t.test") +
+        ylab("Protein score of fitness") +
+        xlab("") +
+        theme_bw() +
+        guides(color=guide_legend(title = ""))
+    
+  }
+}
+
+scoreRelationAdjustmentsPlotList
+```
+
+# Table of type of deaths
+
+```{r}
+knitr::kable(table(dataForModels$death_type))
+knitr::kable(table(dataForModels$death_type, dataForModels$major_death_group))
+```
+
+Create variable CVD_DEATH which accounts for deaths by afib, heart failure, ischemic heart disease and stroke
+
+```{r}
+dataForModels <- dataForModels %>% mutate(CVD_DEATH01 = case_when(major_death_group=="CVD" ~ 1,
+                                                                .default = 0),
+                                          CANCER_DEATH01 = case_when(major_death_group=="CANCER" ~ 1,
+                                                                  .default = 0),
+                                          RESP_DEATH01 = case_when(major_death_group=="RD" ~ 1,
+                                                                 .default = 0),)
+
+
+```
+
+also create the DEATH variable and time to death for our models
+
+UKBB reports a time to death and a time to death censoring variable. **these are not the same** for participants who die. so I am going to take the minimum of the 2 variables to decide when they shoudl be censored. for all-cause death this is not a big death, but for CVD/Resp/Cancer death, we need to make sure we are censoring at the time of death, and not some arbitrary later date.
+
+```{r}
+dataForModels <- dataForModels %>% mutate(DEATH01 = case_when(!is.na(time_to_death) ~ 1,
+                                                            is.na(time_to_death) ~ 0))
+
+dataForModels <- dataForModels %>% mutate(newTimeToDEATH = pmin(time_to_death, time_to_death_censor, na.rm = TRUE))
+
+rmarkdown::paged_table(head(dataForModels %>% select(contains("death", ignore.case = TRUE))))
+```
+
+
+# Determine how to filter "prevalent" cases for our survival analysis
+
+We need to identify the participants who self-report or have a physician report of a prevalent disease and remove them prior to analyses
+
+First I will handle the self-report exclusions
+```{r}
+# convert data frames to logicals
+comorbidity_exclusions <- data.frame(eid = comorbidity_exclusions$eid, apply(comorbidity_exclusions[,-1], 2, as.logical))
+table(is.na(comorbidity_exclusions))
+vasc_problems_by_doc <- data.frame(eid=vasc_problems_by_doc$eid, apply(vasc_problems_by_doc[,-1], 2, as.logical))
+table(is.na(vasc_problems_by_doc))
+
+# merge physician and self-report exclusions
+dim(comorbidity_exclusions)
+comorbidity_exclusions <- comorbidity_exclusions %>% left_join(vasc_problems_by_doc, by="eid")
+dim(comorbidity_exclusions)
+
+
+#get the stuff from the labeled_covariates df
+table(labeled_covariates$diabetes_diagnosed_by_doctor, exclude = NULL)
+table(labeled_covariates$cancer_diagnosed_by_doctor, exclude = NULL)
+table(labeled_covariates$copd_diagnosed_by_doctor, exclude = NULL)
+table(labeled_covariates$cancer_code_self_reported, exclude = NULL)
+
+
+new_covariates <- data.frame(eid = labeled_covariates$eid,
+                             diabetes_diagnosed_by_doctor = case_when(labeled_covariates$diabetes_diagnosed_by_doctor=="Yes" ~ TRUE,
+                                                                      is.na(labeled_covariates$diabetes_diagnosed_by_doctor) ~ NA,
+                                                                      .default = FALSE),
+                             
+                             cancer_diagnosed_by_doctor = case_when(labeled_covariates$cancer_diagnosed_by_doctor=="Yes - you will be asked about this later by an interviewer" ~ TRUE,
+                                                                    is.na(labeled_covariates$cancer_diagnosed_by_doctor) ~ NA,
+                                                                    .default = FALSE),
+                             
+                             copd_diagnosed_by_doctor = case_when(labeled_covariates$copd_diagnosed_by_doctor=="Yes" ~ TRUE,
+                                                                  # is.na(labeled_covariates$copd_diagnosed_by_doctor) ~ NA,
+                                                                  .default = FALSE),
+                             
+                             self_report_cancer_diagnosis = case_when(is.na(labeled_covariates$cancer_code_self_reported) ~ FALSE,
+                                                                      .default = TRUE))
+
+# merge this in
+dim(comorbidity_exclusions)
+comorbidity_exclusions <- comorbidity_exclusions %>% left_join(new_covariates, by="eid")
+dim(comorbidity_exclusions)
+
+# show the options
+sort(colnames(comorbidity_exclusions))
+
+# manually build a list
+rmarkdown::paged_table(phecode_key)
+self_report_doc_exclusions <- list(X153 = c("cancer_diagnosed_by_doctor", "self_report_cancer_diagnosis"),
+                                   X165.1 = c("cancer_diagnosed_by_doctor", "self_report_cancer_diagnosis"),
+                                   X174 = c("cancer_diagnosed_by_doctor", "self_report_cancer_diagnosis"),
+                                   X185 = c("cancer_diagnosed_by_doctor", "self_report_cancer_diagnosis"),
+                                   X250.2 = c("self_reported_type_2_diabetes", "self_reported_type_1_diabetes", "self_reported_diabetes", "self_reported_diabetic_eye_disease", "self_reported_diabetic_nephropathy", "diabetes_diagnosed_by_doctor"),
+                               X272 = c("self_reported_high_cholesterol"),
+                               X278 = NULL,
+                               X290 = c("self_reported_dementia_alzheimers_cognitive_impairment"),
+                               X327.3 = c("self_reported_sleep_apnoea"),
+                               X401 = c("self_reported_hypertension", "self_reported_essential_hypertension", "vascular_problem_high_blood_pressure_diagnosed_by_doctor"),
+                               X411 = c("self_reported_angina", "self_reported_heart_attack_myocardial_infarction", "vascular_problem_heart_attack_diagnosed_by_doctor", "vascular_problem_angina_diagnosed_by_doctor"),
+                               X427.2 = c("self_reported_atrial_fibrillation", "self_reported_atrial_flutter", "self_reported_irregular_heart_beat", "self_reported_sick_sinus_syndrome", "self_reported_wolff_parkinson_white_wpw_syndrome", "self_reported_svt_supraventricular_tachycardia", "self_reported_heart_arrhythmia"),
+                               X428 = c("self_reported_heart_failure_pulmonary_odema", "self_reported_hypertrophic_cardiomyopathy_.hcm_hocm."),
+                               X433 = c("self_reported_ischaemic_stroke", "self_reported_stroke", "self_reported_brain_haemorrhage", "self_reported_subarachnoid_haemorrhage", "self_reported_subdural_haemorrhage_haematoma", "self_reported_transient_ischaemic_attack_.tia.", "vascular_problem_stroke_diagnosed_by_doctor"),
+                               X443 = c("self_reported_peripheral_vascular_disease", "self_reported_leg_claudication_intermittent_claudication", "self_reported_arterial_embolism"),
+                               X571.5 = NULL)
+
+# merge these into the phecode key
+for(i in phecode_key$varname){
+  phecode_key$exclusions[phecode_key$varname==i] <- paste(self_report_doc_exclusions[[i]], collapse = "; ")
+}
+rmarkdown::paged_table(phecode_key)
+write.csv(phecode_key, "UKBB_phecodes_exclusions.csv", row.names = FALSE)
+
+# show that this worked for diabetes
+test <- comorbidity_exclusions %>% filter(if_all(self_report_doc_exclusions$X250.2, ~ . == FALSE))
+table(test$self_reported_type_2_diabetes==TRUE, exclude = NULL)
+table(test$self_reported_type_1_diabetes==TRUE, exclude = NULL)
+table(test$self_reported_diabetes==TRUE, exclude = NULL)
+table(test$self_reported_diabetic_eye_disease==TRUE, exclude=NULL)
+table(test$self_reported_diabetic_nephropathy==TRUE, exclude=NULL)
+
+#does it also work for heart failure
+test <- comorbidity_exclusions %>% filter(if_all(self_report_doc_exclusions$X428, ~ . == FALSE))
+table(test$self_reported_heart_failure_pulmonary_odema==TRUE, exclude=NULL)
+table(test$self_reported_hypertrophic_cardiomyopathy_.hcm_hocm.==TRUE, exclude=NULL)
+```
+
+Merge in all of those co morbidity exclusions to the dataForModels df
+
+```{r}
+dim(dataForModels)
+dataForModels <- dataForModels %>% left_join(comorbidity_exclusions %>% select(all_of(c("eid", unname(unlist(self_report_doc_exclusions))))), by="eid")
+dim(dataForModels)
+```
+
+## Update diabetes variable based on the data from self-report and physician diagnosis of diabetes
+
+```{r}
+dataForModels <- dataForModels %>% mutate(newDiabetes = if_any(self_report_doc_exclusions$X250.2, ~. == TRUE))
+```
+
+# Table 1
+
+```{r}
+table1 <- dataForModels %>% tbl_summary(include = unique(unlist(adjustmentList)))
+table1
+```
+
+
+# Cox models for death and CVD death
+
+```{r, attr.output='style="max-height: 1000px;"'}
+dataForModels$sex <- as.factor(dataForModels$sex)
+dataForModels$new_ethnicity <- as.factor(dataForModels$new_ethnicity)
+dataForModels$newDiabetes <- as.factor(dataForModels$newDiabetes)
+dataForModels$newSmoking <- as.factor(dataForModels$newSmoking)
+dataForModels$newAlcohol <- as.factor(dataForModels$newAlcohol)
+
+table(dataForModels$sex)
+table(dataForModels$new_ethnicity)
+table(dataForModels$newDiabetes)
+table(dataForModels$newSmoking)
+table(dataForModels$newAlcohol)
+
+coxModelResults <- tibble(outcome = character(),
+                          predictor = character(),
+                          hr = double(),
+                          lower95 = double(),
+                          upper95 = double(),
+                          p = double(),
+                          n = double(),
+                          nevent = double(),
+                          medianTimeToEvent = double(),
+                          p25timeToEvent = double(),
+                          p75timeToEvent = double(),
+                          adjustments = character())
+
+
+interactionCoxModelResults <- tibble(outcome = character(),
+                                      interaction = character(),
+                                      beta.score = double(),
+                                      se.score = double(),
+                                      beta.ageORsex = double(),
+                                      se.ageORsex = double(),
+                                      beta.interaction = double(),
+                                      se.interaction = double(),
+                                      p = double(),
+                                      n = double(),
+                                      nevent = double(),
+                                      medianTimeToEvent = double(),
+                                      p25timeToEvent = double(),
+                                      p75timeToEvent = double(),
+                                      adjustments = character())
+
+
+death.vars <- colnames(dataForModels %>% select(contains("DEATH01")))
+scorelist <- c("G22DURTN_score_restricted", "G22DURTN_score_restricted_top21")
+
+dataForModels[,scorelist] <- scale(dataForModels[,scorelist])
+
+for(o in death.vars){
+  for(s in scorelist){
+    for(a in names(adjustmentList)){
+      
+      temp <- dataForModels %>% select(all_of(c("newTimeToDEATH", o, s, adjustmentList[[a]]))) %>% drop_na()
+      
+      ifelse(is.null(adjustmentList[[a]]), rhs <- s, rhs <- paste(s, paste(adjustmentList[[a]], collapse = "+"), sep = "+"))
+      
+      fmla <- as.formula(paste("Surv(newTimeToDEATH,", o,")~", rhs))
+      
+      # check for negative time to events
+      print(summary(temp$newTimeToDEATH))
+      if(min(temp$newTimeToDEATH<0)){print("ERROR: Negative time to event"); break}
+      
+      model <- coxph(fmla, data=temp)
+      model_sum <- summary(model)
+      print(model)
+      
+      coxModelResults <- coxModelResults %>% add_row(outcome = o,
+                                                     predictor = s,
+                                                     hr = model_sum$coefficients[s,"exp(coef)"],
+                                                     lower95 = exp(confint(model))[s,"2.5 %"],
+                                                     upper95 = exp(confint(model))[s,"97.5 %"],
+                                                     p = model_sum$coefficients[s,"Pr(>|z|)"],
+                                                     n = model_sum$n,
+                                                     nevent = model_sum$nevent,
+                                                     medianTimeToEvent = median(temp$newTimeToDEATH),
+                                                     p25timeToEvent = quantile(temp$newTimeToDEATH, 0.25),
+                                                     p75timeToEvent = quantile(temp$newTimeToDEATH, 0.75),
+                                                     adjustments = a)
+      rm(fmla, model, model_sum)
+      
+      if(s=="G22DURTN_restricted_top21") {next}
+      
+      for(i in c("age_at_assessment", "sex")){
+        temp <- dataForModels %>% select(all_of(c("newTimeToDEATH", o, s, i, adjustmentList[[a]]))) %>% drop_na()
+        interactionTerm <- paste0(s, ":", i)
+        
+        ifelse(is.null(adjustmentList[[a]]),
+               rhs <- paste0(s, "*", i),
+               rhs <- paste(paste0(s, "*", i), paste(setdiff(adjustmentList[[a]], i), collapse = "+"), sep = "+")
+               )
+      
+        fmla <- as.formula(paste("Surv(newTimeToDEATH,", o,")~", rhs))
+        
+        model <- coxph(fmla, data=temp, x=TRUE)
+        model_sum <- summary(model)
+        print(model)
+        
+        # update this using grep to find the right line
+        adjustmentTerm <- grep(i, rownames(model_sum$coefficients), value = TRUE)[1]
+        interactionTerm <- grep(interactionTerm, rownames(model_sum$coefficients), value = TRUE)
+        
+        interactionCoxModelResults <- interactionCoxModelResults %>% 
+                                         add_row(outcome = o,
+                                                 interaction = adjustmentTerm,
+                                                 beta.score = model_sum$coefficients[s,"coef"],
+                                                 se.score = model_sum$coefficients[s,"se(coef)"],
+                                                 beta.ageORsex = model_sum$coefficients[adjustmentTerm,"coef"],
+                                                 se.ageORsex = model_sum$coefficients[adjustmentTerm,"se(coef)"],
+                                                 beta.interaction = model_sum$coefficients[interactionTerm,"coef"],
+                                                 se.interaction = model_sum$coefficients[interactionTerm,"se(coef)"],
+                                                 p = model_sum$coefficients[interactionTerm,"Pr(>|z|)"],
+                                                 n = model_sum$n,
+                                                 nevent = model_sum$nevent,
+                                                 medianTimeToEvent = median(temp$newTimeToDEATH),
+                                                 p25timeToEvent = quantile(temp$newTimeToDEATH, 0.25),
+                                                 p75timeToEvent = quantile(temp$newTimeToDEATH, 0.75),
+                                                 adjustments = a)
+        
+        rm(fmla, model, model_sum, interactionTerm)
+      }
+    }
+  }
+}
+```
+
+# Cox models for incident diseases (death done above)
+
+```{r, attr.output='style="max-height: 1000px;"'}
+
+for(o in phecode_key$varname){
+  for(s in scorelist){
+    for(a in names(adjustmentList)){
+      
+      dataForModelsSubset <- dataForModels %>% select(eid,
+                                                      all_of(c(s, adjustmentList$full)),
+                                                      contains(o),
+                                                      self_report_doc_exclusions[[o]],
+                                                      "time_to_inpatient_censor",
+                                                      "newTimeToDEATH")
+      
+      # create a variable for the phecode event 0, 1
+      dataForModelsSubset <- dataForModelsSubset %>% mutate(event01 = case_when(dataForModelsSubset[[o]]=="True" ~ 1,
+                                                                                dataForModelsSubset[[o]]=="False" ~ 0,
+                                                                                dataForModelsSubset[[o]]=="EXCLUDED" ~ NA))
+      
+      dataForModelsSubset <- dataForModelsSubset %>% drop_na(all_of(c(s, "event01", adjustmentList[[a]])))
+      
+      # create a time to event variable. censor at the inpatient censoring or death
+      dataForModelsSubset$days_after_assessment <- dataForModelsSubset[[paste0(o,"_days_after_assessment")]]
+      
+      dataForModelsSubset <- dataForModelsSubset %>% mutate(timeToEvent = pmin(time_to_inpatient_censor, newTimeToDEATH, days_after_assessment, na.rm = TRUE))
+      
+      # filter out the prevalent cases
+      dataForModelsSubset <- dataForModelsSubset %>% filter(if_all(self_report_doc_exclusions[[o]], ~ . == FALSE))
+      
+      
+      # filter out those with time to event <=0
+      dataForModelsSubset <- dataForModelsSubset %>% filter(timeToEvent>0)
+      
+      ifelse(is.null(adjustmentList[[a]]), rhs <- s, rhs <- paste(s, paste(adjustmentList[[a]], collapse = "+"), sep = "+"))
+      
+      
+      fmla <- as.formula(paste("Surv(timeToEvent, event01)~", rhs))
+      
+      # check for negative time to events
+      print(summary(dataForModelsSubset$timeToEvent))
+      if(min(dataForModelsSubset$timeToEvent<0)){print("ERROR: Negative time to event"); break}
+      
+      model <- coxph(fmla, data=dataForModelsSubset)
+      model_sum <- summary(model)
+      print(model)
+      
+      coxModelResults <- coxModelResults %>% add_row(outcome = o,
+                                                     predictor = s,
+                                                     hr = model_sum$coefficients[s,"exp(coef)"],
+                                                     lower95 = exp(confint(model))[s,"2.5 %"],
+                                                     upper95 = exp(confint(model))[s,"97.5 %"],
+                                                     p = model_sum$coefficients[s,"Pr(>|z|)"],
+                                                     n = model_sum$n,
+                                                     nevent = model_sum$nevent,
+                                                     medianTimeToEvent = median(dataForModelsSubset$timeToEvent),
+                                                     p25timeToEvent = quantile(dataForModelsSubset$timeToEvent, 0.25),
+                                                     p75timeToEvent = quantile(dataForModelsSubset$timeToEvent, 0.75),
+                                                     adjustments = a)
+      
+      rm(fmla, model, model_sum)
+      
+      ##
+      ## INTERACTION MODELS FOR AGE AND SEX
+      ##
+      
+      if(s=="G22DURTN_restricted_top21") {next}
+      
+      for(i in c("age_at_assessment", "sex")){
+        
+        interactionTerm <- paste0(s, ":", i)
+        
+        ifelse(is.null(adjustmentList[[a]]),
+               rhs <- paste0(s, "*", i),
+               rhs <- paste(paste0(s, "*", i), paste(setdiff(adjustmentList[[a]], i), collapse = "+"), sep = "+")
+               )
+        
+        # skip outcomes of prostate cancer (all men) and hypertensive disorders of pregnancy (all women)
+        if(o=="X185" | o=="X642"){
+          if(i=="sex"){ 
+            next
+            }else{
+              ifelse(is.null(adjustmentList[[a]]),
+                     rhs <- paste0(s, "*", i),
+                     rhs <- paste(paste0(s, "*", i), paste(setdiff(adjustmentList[[a]], c(i,"sex")), collapse = "+"), sep = "+"))
+            }
+        } 
+        
+        fmla <- as.formula(paste("Surv(timeToEvent, event01)~", rhs))
+
+        model <- coxph(fmla, data=dataForModelsSubset)
+        model_sum <- summary(model)
+        print(model)
+        
+        # update this using grep to find the right line
+        adjustmentTerm <- grep(i, rownames(model_sum$coefficients), value = TRUE)[1]
+        interactionTerm <- grep(interactionTerm, rownames(model_sum$coefficients), value = TRUE)
+        
+        interactionCoxModelResults <- interactionCoxModelResults %>% 
+                                         add_row(outcome = o,
+                                                 interaction = i,
+                                                 beta.score = model_sum$coefficients[s,"coef"],
+                                                 se.score = model_sum$coefficients[s,"se(coef)"],
+                                                 beta.ageORsex = model_sum$coefficients[adjustmentTerm,"coef"],
+                                                 se.ageORsex = model_sum$coefficients[adjustmentTerm,"se(coef)"],
+                                                 beta.interaction = model_sum$coefficients[interactionTerm,"coef"],
+                                                 se.interaction = model_sum$coefficients[interactionTerm,"se(coef)"],
+                                                 p = model_sum$coefficients[interactionTerm,"Pr(>|z|)"],
+                                                 n = model_sum$n,
+                                                 nevent = model_sum$nevent,
+                                                 medianTimeToEvent = median(dataForModelsSubset$timeToEvent),
+                                                 p25timeToEvent = quantile(dataForModelsSubset$timeToEvent, 0.25),
+                                                 p75timeToEvent = quantile(dataForModelsSubset$timeToEvent, 0.75),
+                                                 adjustments = a)
+        
+        rm(fmla, model, model_sum, interactionTerm)
+      }
+    }
+  }
+}
+interactionCoxModelResults <- interactionCoxModelResults %>% left_join(phecode_key, by=c("outcome"="varname"))
+coxModelResults <- coxModelResults %>% left_join(phecode_key, by=c("outcome"="varname"))
+
+outputFilesToMd5 <- c("ukbb_cox_results.csv", "ukbb_InteractionCox_results.csv")
+
+write.csv(coxModelResults, file="ukbb_cox_results.csv", row.names = FALSE)
+write.csv(interactionCoxModelResults, file="ukbb_InteractionCox_results.csv", row.names = FALSE)
+```
+
+
+# NRI and c-statistic
+
+Here we will compare Cox PH models using our "full" adjustment set (`r paste(adjustmentList$full, collapse = ", ")`) to models including the protein score of fitness. We will examine the net reclassification (NRI) and c-statistic differences.
+
+## death
+
+```{r}
+NRI.Cstat.Output <- tibble(outcome = character(),
+                           base.cindex = double(),
+                           base.cindex.std = double(),
+                           score.cindex = double(),
+                           score.cindex.std = double(),
+                           cindex.compare.pval = double(),
+                           NRI.overall = character(),
+                           NRI.events = character(),
+                           NRI.nonevents = character())
+
+# o <- death.vars[4]
+# s <- scorelist[1]
+
+for(o in death.vars){
+    
+    fmla <- as.formula(paste("Surv(newTimeToDEATH,", o,")~", paste(adjustmentList$full, collapse = "+")))
+      
+    base.model <- coxph(fmla, data=dataForModels, x=TRUE)
+    score.model <- update(base.model, .~. + G22DURTN_score_restricted)
+
+
+    ctest <- survival::concordance(base.model, score.model)
+    
+ 
+    contr <- c(-1, 1)
+    dtest <- diff(coef(ctest))
+    dvar <- contr %*% vcov(ctest) %*% contr
+    zscore.c <- dtest/sqrt(dvar)
+    pval.c <- 2*pnorm(-abs(zscore.c))
+
+    # Follow-up 75th percentile for events only - 
+    # we have to have a threshold for which to calculate the NRI -- 
+    # we set this to the 75th percentile of the follow-up time for events
+    fu.time <- quantile(dataForModels$newTimeToDEATH[dataForModels[[o]]==1], probs=0.75)
+   
+    # Set seed for nricens bootstrap sampling
+    set.seed(3.14159)
+   
+    
+    death.nri <- nricens(mdl.std = base.model,
+                         mdl.new = score.model,
+                         cut = 0,
+                         t0 = fu.time,
+                         updown = "diff",
+                         niter=100)
+    
+    nri.summary <- paste0(signif(death.nri$nri$Estimate, 2), " (",signif(death.nri$nri$Lower, 2) , "-", signif(death.nri$nri$Upper, 2) , ")")
+    
+    NRI.Cstat.Output <- NRI.Cstat.Output %>% add_row(outcome = o,
+                                                     base.cindex = base.model$concordance["concordance"],
+                                                     base.cindex.std = base.model$concordance["std"],
+                                                     score.cindex = score.model$concordance["concordance"],
+                                                     score.cindex.std = score.model$concordance["std"],
+                                                     cindex.compare.pval = pval.c,
+                                                     NRI.overall = nri.summary[1],
+                                                     NRI.events = nri.summary[2],
+                                                     NRI.nonevents = nri.summary[3])
+    
+    rm(base.model, score.model, fmla, ctest, contr, dtest, dvar, zscore.c, pval.c, death.nri, nri.summary)
+}
+```
+
+## incident disease
+
+```{r}
+for(o in phecode_key$varname){
+  
+    dataForModelsSubset <- dataForModels %>% select(eid,
+                                                    all_of(c("G22DURTN_score_restricted", adjustmentList$full)),
+                                                    contains(o),
+                                                    self_report_doc_exclusions[[o]],
+                                                    "time_to_inpatient_censor",
+                                                    "newTimeToDEATH")
+      
+    # create a variable for the phecode event 0, 1
+    dataForModelsSubset <- dataForModelsSubset %>% mutate(event01 = case_when(dataForModelsSubset[[o]]=="True" ~ 1,
+                                                                              dataForModelsSubset[[o]]=="False" ~ 0,
+                                                                              dataForModelsSubset[[o]]=="EXCLUDED" ~ NA))
+    
+    # create a time to event variable. censor at the inpatient censoring or death
+    dataForModelsSubset$days_after_assessment <- dataForModelsSubset[[paste0(o,"_days_after_assessment")]]
+    
+    dataForModelsSubset <- dataForModelsSubset %>% mutate(timeToEvent = pmin(time_to_inpatient_censor, newTimeToDEATH, days_after_assessment, na.rm = TRUE))
+    
+    # filter out the prevalent cases
+    dataForModelsSubset <- dataForModelsSubset %>% filter(if_all(self_report_doc_exclusions[[o]], ~ . == FALSE))
+      
+    # for the diabetes outcome, remove those with prevalent diabetes
+    # if(o=="X250.2"){dataForModelsSubset <- dataForModelsSubset %>% filter(newDiabetes!="Yes")}
+    
+    # filter out those with time to event <=0
+    dataForModelsSubset <- dataForModelsSubset %>% filter(timeToEvent>0)
+      
+    fmla <- as.formula(paste("Surv(timeToEvent, event01)~", rhs))
+    
+    base.model <- coxph(fmla, data=dataForModelsSubset, x=TRUE)
+    score.model <- update(base.model, .~. + G22DURTN_score_restricted)
+    
+
+    ctest <- survival::concordance(base.model, score.model)
+ 
+    contr <- c(-1, 1)
+    dtest <- diff(coef(ctest))
+    dvar <- contr %*% vcov(ctest) %*% contr
+    zscore.c <- dtest/sqrt(dvar)
+    pval.c <- 2*pnorm(-abs(zscore.c))
+
+    # Follow-up 75th percentile for events only - 
+    # we have to have a threshold for which to calculate the NRI -- 
+    # we set this to the 75th percentile of the follow-up time for events
+    fu.time <- quantile(dataForModelsSubset$timeToEvent[dataForModelsSubset$event01==1], probs=0.75, na.rm = TRUE)
+   
+    # Set seed for nricens bootstrap sampling
+    set.seed(3.14159)
+    
+    death.nri <- nricens(mdl.std = base.model,
+                         mdl.new = score.model,
+                         cut = 0,
+                         t0 = fu.time,
+                         updown = "diff",
+                         niter=100)
+    
+    nri.summary <- paste0(signif(death.nri$nri$Estimate, 2), " (",signif(death.nri$nri$Lower, 2) , "-", signif(death.nri$nri$Upper, 2) , ")")
+    
+    NRI.Cstat.Output <- NRI.Cstat.Output %>% add_row(outcome = o,
+                                                     base.cindex = base.model$concordance["concordance"],
+                                                     base.cindex.std = base.model$concordance["std"],
+                                                     score.cindex = score.model$concordance["concordance"],
+                                                     score.cindex.std = score.model$concordance["std"],
+                                                     cindex.compare.pval = pval.c,
+                                                     NRI.overall = nri.summary[1],
+                                                     NRI.events = nri.summary[2],
+                                                     NRI.nonevents = nri.summary[3])
+    
+    rm(base.model, score.model, fmla, ctest, contr, dtest, dvar, zscore.c, pval.c, nri.summary, dataForModelsSubset)
+}
+
+NRI.Cstat.Output <- NRI.Cstat.Output %>% left_join(phecode_key, by=c("outcome"="varname"))
+outputFilesToMd5 <- c(outputFilesToMd5, "ukbb_NRI_Cstat_results.csv")
+write.csv(NRI.Cstat.Output, file="ukbb_NRI_Cstat_results.csv", row.names = FALSE)
+```
+
+# Check proportionality
+
+In the original code I tried to check Cox PH using the cox.zph function which wasn't working. After more investigation into why, I found that for some models, the race/ethnicity variable was causing the problem with cox.zph. Some race/ethnic categories did not have any events and so when cox.zph tests each varaible for PH violations, it ran into problems on those models. I modified my code to collapse race/ethnic groups that do not have any events into groups with events.
+
+## Death and cause-specific death
+
+```{r}
+coxModel_PH_check <- tibble(outcome = character(),
+                          predictor = character(),
+                          hr = double(),
+                          lower95 = double(),
+                          upper95 = double(),
+                          p = double(),
+                          n = double(),
+                          nevent = double(),
+                          medianTimeToEvent = double(),
+                          p25timeToEvent = double(),
+                          p75timeToEvent = double(),
+                          ph.violation.pval = double(),
+                          adjustments = character())
+
+
+for(o in death.vars){
+  for(s in scorelist){
+    for(a in names(adjustmentList)){
+      
+      temp <- dataForModels %>% select(all_of(c("newTimeToDEATH", o, s, adjustmentList[[a]]))) %>% drop_na()
+      
+      # cox.zph blows up when there are no deaths in all levels of a factor variable
+      # here I condense the race categories so each level has events
+      if(a!="unadjusted"){
+        hypo <- as.data.frame.matrix(table(temp[[o]], temp[["new_ethnicity"]]))
+        zeroEventCat <- colnames(hypo[2,][which(hypo[2,]==0)])
+        minVal <- min(hypo[which(hypo[2,]!=0)])
+        minCat <- colnames(hypo[2,][which(hypo[2,]==minVal)])
+        
+        if(length(zeroEventCat)!=0){
+        
+          print(table(temp$new_ethnicity, exclude = NULL))
+          
+          temp$new_ethnicity <- case_when(temp$new_ethnicity %in% c(zeroEventCat, minCat) ~ "Unknown-other",
+                                          .default = temp$new_ethnicity)
+          
+          print(table(temp$new_ethnicity, exclude = NULL))
+        }
+      }
+      
+      ifelse(is.null(adjustmentList[[a]]), rhs <- s, rhs <- paste(s, paste(adjustmentList[[a]], collapse = "+"), sep = "+"))
+      
+      fmla <- as.formula(paste0("Surv(newTimeToDEATH,", o,")~ ", rhs))
+      
+      # check for negative time to events
+      print(summary(temp$newTimeToDEATH))
+      if(min(temp$newTimeToDEATH<0)){print("ERROR: Negative time to event"); break}
+
+      
+      
+      model <- coxph(fmla, data=temp)
+      model_sum <- summary(model)
+      print(model)
+      
+      coxModel_PH_check <- coxModel_PH_check %>% add_row(outcome = o,
+                                                         predictor = s,
+                                                         hr = model_sum$coefficients[s,"exp(coef)"],
+                                                         lower95 = exp(confint(model))[s,"2.5 %"],
+                                                         upper95 = exp(confint(model))[s,"97.5 %"],
+                                                         p = model_sum$coefficients[s,"Pr(>|z|)"],
+                                                         n = model_sum$n,
+                                                         nevent = model_sum$nevent,
+                                                         medianTimeToEvent = median(temp$newTimeToDEATH),
+                                                         p25timeToEvent = quantile(temp$newTimeToDEATH, 0.25),
+                                                         p75timeToEvent = quantile(temp$newTimeToDEATH, 0.75),
+                                                         ph.violation.pval = cox.zph(model)$table[s,"p"],
+                                                         adjustments = a)
+            
+      # plot KM curves for PH
+      temp <- temp %>% mutate(scoreNtile = ntile(temp[[s]], 4))
+      
+      plot(survfit(as.formula(paste0("Surv(newTimeToDEATH,", o,")~ scoreNtile")), data = temp),
+           col = c("red", "blue", "green", "orange"), xlab = "Survival Time In Days", ylab = "Survival Probabilities",
+           ylim = c(0.5, 1.0),
+           main = paste(o, s, a, sep = ":"))
+      
+      legend("bottomleft",
+             c("Fitness score Q1", "Fitness score Q2", "Fitness score Q3", "Fitness score Q4"),
+             lty = "solid",
+             col = c("red", "blue", "green", "orange"))
+      
+      print(paste(o, s, a, sep = ":"))
+      if(a!="unadjusted"){print(table(temp[[o]], temp$new_ethnicity, exclude = NULL))}
+      
+      
+
+      # schoenfeld residuals
+      print(
+        survminer::ggcoxzph(cox.zph(model, terms = FALSE), var = s, caption = paste(o, s, a, sep = ":"))
+      )
+      
+      # rm(fmla, model, model_sum)
+    }
+  }
+}
+```
+
+## Incident disease
+
+```{r}
+
+o <- phecode_key$varname[5]
+s <- scorelist[1]
+a <- names(adjustmentList)[2]
+
+
+for(o in phecode_key$varname){
+  for(s in scorelist){
+    for(a in names(adjustmentList)){
+      
+      dataForModelsSubset <- dataForModels %>% select(eid,
+                                                      all_of(c(s, "age_at_assessment", "sex", adjustmentList[[a]])),
+                                                      contains(o),
+                                                      self_report_doc_exclusions[[o]],
+                                                      "time_to_inpatient_censor",
+                                                      "newTimeToDEATH")
+      
+      # create a variable for the phecode event 0, 1
+      dataForModelsSubset <- dataForModelsSubset %>% mutate(event01 = case_when(dataForModelsSubset[[o]]=="True" ~ 1,
+                                                                                dataForModelsSubset[[o]]=="False" ~ 0,
+                                                                                dataForModelsSubset[[o]]=="EXCLUDED" ~ NA))
+      
+      dataForModelsSubset <- dataForModelsSubset %>% drop_na(all_of(c(s, "event01", adjustmentList[[a]])))
+      
+      # create a time to event variable. censor at the inpatient censoring or death
+      dataForModelsSubset$days_after_assessment <- dataForModelsSubset[[paste0(o,"_days_after_assessment")]]
+      
+      dataForModelsSubset <- dataForModelsSubset %>% mutate(timeToEvent = pmin(time_to_inpatient_censor, newTimeToDEATH, days_after_assessment, na.rm = TRUE))
+      
+      # filter out the prevalent cases
+      dataForModelsSubset <- dataForModelsSubset %>% filter(if_all(self_report_doc_exclusions[[o]], ~ . == FALSE))
+
+      # filter out those with time to event <=0
+      dataForModelsSubset <- dataForModelsSubset %>% filter(timeToEvent>0)
+      
+      
+      # cox.zph blows up when there are no deaths in all levels of a factor variable
+      # here I condense the race categories so each level has events
+      if(a!="unadjusted"){
+        hypo <- as.data.frame.matrix(table(dataForModelsSubset[["event01"]], dataForModelsSubset[["new_ethnicity"]]))
+        zeroEventCat <- colnames(hypo[2,][which(hypo[2,]==0)])
+        minVal <- min(hypo[which(hypo[2,]!=0)])
+        minCat <- colnames(hypo[2,][which(hypo[2,]==minVal)])
+        
+        if(length(zeroEventCat)!=0){
+        
+          print(table(dataForModelsSubset$new_ethnicity, exclude = NULL))
+          
+          dataForModelsSubset$new_ethnicity <- case_when(dataForModelsSubset$new_ethnicity %in% c(zeroEventCat, minCat) ~ "Unknown-other",
+                                          .default = dataForModelsSubset$new_ethnicity)
+          
+          print(table(dataForModelsSubset$new_ethnicity, exclude = NULL))
+        }
+      }
+      
+      ifelse(is.null(adjustmentList[[a]]), rhs <- s, rhs <- paste(s, paste(adjustmentList[[a]], collapse = "+"), sep = "+"))
+      
+      # remove sex from the adjustments for outcomes of prostate cancer (all men) and hypertensive disorders of pregnancy (all women)
+      # don't have to do this for breast cancer as there are some men with breast cancer
+      if(o=="X185" | o=="X642"){
+        ifelse(is.null(adjustmentList[[a]]), rhs <- s, rhs <- paste(s, paste(setdiff(adjustmentList[[a]], "sex"), collapse = "+"), sep = "+"))
+      }
+      
+      fmla <- as.formula(paste("Surv(timeToEvent, event01)~", rhs))
+      
+      # check for negative time to events
+      print(summary(dataForModelsSubset$timeToEvent))
+      if(min(dataForModelsSubset$timeToEvent<0)){print("ERROR: Negative time to event"); break}
+      
+      model <- coxph(fmla, data=dataForModelsSubset)
+      model_sum <- summary(model)
+      print(model)
+      
+      coxModel_PH_check <- coxModel_PH_check %>% add_row(outcome = o,
+                                                     predictor = s,
+                                                     hr = model_sum$coefficients[s,"exp(coef)"],
+                                                     lower95 = exp(confint(model))[s,"2.5 %"],
+                                                     upper95 = exp(confint(model))[s,"97.5 %"],
+                                                     p = model_sum$coefficients[s,"Pr(>|z|)"],
+                                                     n = model_sum$n,
+                                                     nevent = model_sum$nevent,
+                                                     medianTimeToEvent = median(dataForModelsSubset$timeToEvent),
+                                                     p25timeToEvent = quantile(dataForModelsSubset$timeToEvent, 0.25),
+                                                     p75timeToEvent = quantile(dataForModelsSubset$timeToEvent, 0.75),
+                                                     ph.violation.pval = cox.zph(model)$table[s,"p"],
+                                                     adjustments = a)
+      
+      # plot KM curves for PH
+      dataForModelsSubset <- dataForModelsSubset %>% mutate(scoreNtile = ntile(dataForModelsSubset[[s]], 4))
+      
+      plot(survfit(as.formula(paste0("Surv(newTimeToDEATH, event01) ~ scoreNtile")), data = dataForModelsSubset),
+           col = c("red", "blue", "green", "orange"), xlab = "Survival Time In Days", ylab = "Survival Probabilities",
+           ylim = c(0.5, 1.0),
+           main = paste(phecode_key$description[phecode_key$varname==o], s, a, sep = ":"))
+      
+      legend("bottomleft",
+             c("Fitness score Q1", "Fitness score Q2", "Fitness score Q3", "Fitness score Q4"),
+             lty = "solid",
+             col = c("red", "blue", "green", "orange"))
+
+      # schoenfeld residuals
+      print(
+        survminer::ggcoxzph(cox.zph(model, terms = FALSE), var = s, caption = paste(phecode_key$description[phecode_key$varname==o], s, a, sep = ":"))
+      )
+      
+      rm(fmla, model, model_sum)
+    }
+  }
+}
+
+rmarkdown::paged_table(coxModel_PH_check)
+write.csv(coxModel_PH_check,
+          "coxModel_PH_check.csv",
+          row.names = FALSE)
+
+outputFilesToMd5 <- c(outputFilesToMd5, "coxModel_PH_check.csv")
+```
+
+# Fine Gray models for death outcomes (CVD, cancer, respiratory)
+
+```{r}
+fineGrayData <- dataForModels %>% select(eid, contains("G22DURTN"), all_of(unique(unlist(adjustmentList))), contains("DEATH01"), newTimeToDEATH)
+
+# create new event factor variable
+# we want a factor variable with censoring as the referent
+
+fineGrayData <- fineGrayData %>%
+                mutate(fg.event = case_when(CVD_DEATH01==1 ~ "CVD_DEATH",
+                                            CANCER_DEATH01==1 ~ "CANCER_DEATH",
+                                            RESP_DEATH01==1 ~ "RESP_DEATH",
+                                            DEATH01==1 & CVD_DEATH01==0 & CANCER_DEATH01==0 & RESP_DEATH01==0 ~ "OTHER_DEATH",
+                                            DEATH01==0 ~ "CENSOR"))
+
+fineGrayData$fg.event <- factor(fineGrayData$fg.event,
+                                levels = c("CENSOR", "OTHER_DEATH", "CANCER_DEATH", "CVD_DEATH", "RESP_DEATH"))
+
+# check our work
+table(fineGrayData$fg.event, fineGrayData$DEATH01, exclude = NULL)
+table(fineGrayData$fg.event, fineGrayData$CVD_DEATH01, exclude = NULL)
+table(fineGrayData$fg.event, fineGrayData$CANCER_DEATH01, exclude = NULL)
+table(fineGrayData$fg.event, fineGrayData$RESP_DEATH01, exclude = NULL)
+```
+
+```{r}
+# check for negative time to event
+if(min(fineGrayData$newTimeToDEATH<0)){print("ERROR: Negative time to event")}
+
+fineGrayResults <- tibble(outcome = character(),
+                          predictor = character(),
+                          hr = double(),
+                          lower95 = double(),
+                          upper95 = double(),
+                          p = double(),
+                          n = double(),
+                          nevent = double(),
+                          medianTimeToEvent = double(),
+                          p25timeToEvent = double(),
+                          p75timeToEvent = double(),
+                          adjustments = character())
+
+# in the prior code I looped over multiple score types, here I am just focused on 1
+s <- "G22DURTN_score_restricted"
+
+event <- "CVD_DEATH"
+a <- "full"
+
+for(event in setdiff(levels(fineGrayData$fg.event), c("CENSOR", "OTHER_DEATH"))){
+  for(a in names(adjustmentList)){
+    temp <- fineGrayData %>% drop_na(all_of(c(s, adjustmentList[[a]])))
+    
+    # pull the adjustments and score together
+    ifelse(is.null(adjustmentList[[a]]), rhs <- s, rhs <- paste(s, paste(adjustmentList[[a]], collapse = "+"), sep = "+"))
+      
+    fmla <- as.formula(paste("Surv(newTimeToDEATH, fg.event)~", rhs))
+    
+    cov <- as.matrix(model.matrix(fmla, data=temp)[,-1]) # get all of the covariates together
+    if(a=="unadjusted"){colnames(cov) <- s} # because sometimes R is dumb
+
+    temp$crr.event <- case_when(temp$fg.event=="CENSOR" ~ 0,
+                                temp$fg.event==event ~ 1,
+                                .default = 2)
+    
+    table(temp$fg.event, temp$crr.event)
+    temp$crr.event <- as.factor(temp$crr.event)
+    
+    crr.model <- crr(temp$newTimeToDEATH,
+                     temp$crr.event,
+                     cov1=cov,
+                     failcode = 1,
+                     cencode = 0)
+    
+    summary(crr.model)
+    crr.model.sum <- summary(crr.model)
+    
+    fineGrayResults <- fineGrayResults %>% add_row(outcome = event,
+                                                     predictor = s,
+                                                     hr = crr.model.sum$coef[s,"exp(coef)"],
+                                                     lower95 = crr.model.sum$conf.int[s,"2.5%"],
+                                                     upper95 = crr.model.sum$conf.int[s,"97.5%"],
+                                                     p = pnorm(-abs(crr.model.sum$coef[s,"z"]))*2,
+                                                     n = crr.model$n,
+                                                     nevent = sum(temp$crr.event==1),
+                                                     medianTimeToEvent = median(temp$newTimeToDEATH),
+                                                     p25timeToEvent = quantile(temp$newTimeToDEATH, 0.25),
+                                                     p75timeToEvent = quantile(temp$newTimeToDEATH, 0.75),
+                                                     adjustments = a)
+    
+  }
+}
+
+write.csv(fineGrayResults,
+          file = "fineGrayResults.csv",
+          row.names = FALSE)
+
+outputFilesToMd5 <- c(outputFilesToMd5, "fineGrayResults.csv")
+```
+
+# check Cox models using the fitness score derived from healthy CARDIA participants
+
+## calculate "healthy CARDIA" score
+
+```{r}
+temp.coefs <- healthy_cardia_score_coefs %>% 
+              filter(healthy.lasso.score_restricted!=0, AptName!="(Intercept)") %>% 
+              select(Assay, UniProt, Panel, healthy.lasso.score_restricted) %>%
+              mutate(Assay = tolower(Assay))
+
+
+# Define vector of proteins
+proteins.to.use <- temp.coefs %>% pull(Assay)
+
+# Subset proteins: 
+unimputed.olink.inst0 <- olink.instance0 %>% dplyr::select(eid, all_of(proteins.to.use))
+rownames(unimputed.olink.inst0) <- unimputed.olink.inst0$eid
+unimputed.olink.inst0 <- unimputed.olink.inst0 %>% dplyr::select(-eid)
+
+# Complete the cases 
+unimputed.olink.inst0 <- unimputed.olink.inst0[complete.cases(unimputed.olink.inst0),]
+unimputed.olink.inst0 <- as.data.frame(scale(unimputed.olink.inst0, center=TRUE, scale=TRUE))
+dim(unimputed.olink.inst0)
+
+# Confirm all proteins there
+intersect(colnames(unimputed.olink.inst0), proteins.to.use) # Should be all, as we had subsetted 
+
+# Confirm all scaled
+summary(apply(unimputed.olink.inst0, 2, mean))
+summary(apply(unimputed.olink.inst0, 2, sd))
+
+# Generate scores: UNIMPUTED
+dim(unimputed.olink.inst0[,proteins.to.use])
+dim(as.matrix(temp.coefs$healthy.lasso.score_restricted))
+identical(colnames(unimputed.olink.inst0[,proteins.to.use]), tolower(temp.coefs$Assay)) # Ok to dot
+
+healthy.scores <- data.frame(eid = rownames(unimputed.olink.inst0),
+                             healthy.lasso.score_restricted = scale(as.matrix(unimputed.olink.inst0[,proteins.to.use]) %*% as.matrix(temp.coefs$healthy.lasso.score_restricted),
+                                                                    center=TRUE, scale=TRUE))
+```
+
+This "healthy" score is available in ~29k UKB participants and the prior score is available in ~21k.
+
+I could do these analyses on the 29k with the score, but that gets confusing and will be hard to compare with our primary analysis.
+
+So I will just use the subset of participants from my original approach that have the "healthy" score available.
+
+Create our new data set for Cox models
+
+```{r}
+healthy.scores$eid <- as.numeric(healthy.scores$eid)
+healthyDataForModels <- dataForModels %>%
+                        select(!contains("score")) %>%
+                        left_join(healthy.scores, by="eid") %>% 
+                        drop_na(healthy.lasso.score_restricted) %>%
+                        relocate(healthy.lasso.score_restricted, .after=eid)
+
+# check distributions
+hist.data.frame(healthyDataForModels[,c("healthy.lasso.score_restricted", "VO2max", unique(unlist(adjustmentList)))])
+
+```
+
+
+
+## cox models on the "healthy CARDIA" score
+
+### death
+
+```{r, attr.output='style="max-height: 1000px;"'}
+
+healthyCoxModelResults <- tibble(outcome = character(),
+                                  predictor = character(),
+                                  hr = double(),
+                                  lower95 = double(),
+                                  upper95 = double(),
+                                  p = double(),
+                                  n = double(),
+                                  nevent = double(),
+                                  medianTimeToEvent = double(),
+                                  p25timeToEvent = double(),
+                                  p75timeToEvent = double(),
+                                  adjustments = character())
+
+
+
+
+death.vars <- colnames(healthyDataForModels %>% select(contains("DEATH01")))
+scorelist <- c("healthy.lasso.score_restricted")
+
+healthyDataForModels[,scorelist] <- scale(healthyDataForModels[,scorelist])
+
+for(o in death.vars){
+  for(s in scorelist){
+    for(a in names(adjustmentList)){
+      
+      temp <- healthyDataForModels %>% select(all_of(c("newTimeToDEATH", o, s, adjustmentList[[a]]))) %>% drop_na()
+      
+      ifelse(is.null(adjustmentList[[a]]), rhs <- s, rhs <- paste(s, paste(adjustmentList[[a]], collapse = "+"), sep = "+"))
+      
+      fmla <- as.formula(paste("Surv(newTimeToDEATH,", o,")~", rhs))
+      
+      # check for negative time to events
+      print(summary(temp$newTimeToDEATH))
+      if(min(temp$newTimeToDEATH<0)){print("ERROR: Negative time to event"); break}
+      
+      model <- coxph(fmla, data=temp)
+      model_sum <- summary(model)
+      print(model)
+      
+      healthyCoxModelResults <- healthyCoxModelResults %>% 
+                                add_row(outcome = o,
+                                         predictor = s,
+                                         hr = model_sum$coefficients[s,"exp(coef)"],
+                                         lower95 = exp(confint(model))[s,"2.5 %"],
+                                         upper95 = exp(confint(model))[s,"97.5 %"],
+                                         p = model_sum$coefficients[s,"Pr(>|z|)"],
+                                         n = model_sum$n,
+                                         nevent = model_sum$nevent,
+                                         medianTimeToEvent = median(temp$newTimeToDEATH),
+                                         p25timeToEvent = quantile(temp$newTimeToDEATH, 0.25),
+                                         p75timeToEvent = quantile(temp$newTimeToDEATH, 0.75),
+                                         adjustments = a)
+      rm(fmla, model, model_sum)
+    }
+  }
+}
+```
+
+### incident diesease
+
+```{r, attr.output='style="max-height: 1000px;"'}
+for(o in phecode_key$varname){
+  for(s in scorelist){
+    for(a in names(adjustmentList)){
+      
+      dataForModelsSubset <- healthyDataForModels %>% select(eid,
+                                                      all_of(c(s, "age_at_assessment", "sex", adjustmentList[[a]])),
+                                                      contains(o),
+                                                      self_report_doc_exclusions[[o]],
+                                                      "time_to_inpatient_censor",
+                                                      "newTimeToDEATH")
+      
+      # create a variable for the phecode event 0, 1
+      dataForModelsSubset <- dataForModelsSubset %>% mutate(event01 = case_when(dataForModelsSubset[[o]]=="True" ~ 1,
+                                                                                dataForModelsSubset[[o]]=="False" ~ 0,
+                                                                                dataForModelsSubset[[o]]=="EXCLUDED" ~ NA))
+      
+      dataForModelsSubset <- dataForModelsSubset %>% drop_na(all_of(c(s, "event01", adjustmentList[[a]])))
+      
+      # create a time to event variable. censor at the inpatient censoring or death
+      dataForModelsSubset$days_after_assessment <- dataForModelsSubset[[paste0(o,"_days_after_assessment")]]
+      
+      dataForModelsSubset <- dataForModelsSubset %>% mutate(timeToEvent = pmin(time_to_inpatient_censor, newTimeToDEATH, days_after_assessment, na.rm = TRUE))
+      
+      # filter out the prevalent cases
+      dataForModelsSubset <- dataForModelsSubset %>% filter(if_all(self_report_doc_exclusions[[o]], ~ . == FALSE))
+      
+      # filter out those with time to event <=0
+      dataForModelsSubset <- dataForModelsSubset %>% filter(timeToEvent>0)
+      
+      ifelse(is.null(adjustmentList[[a]]), rhs <- s, rhs <- paste(s, paste(adjustmentList[[a]], collapse = "+"), sep = "+"))
+      
+      # remove sex from the adjustments for outcomes of prostate cancer (all men) and hypertensive disorders of pregnancy (all women)
+      # don't have to do this for breast cancer as there are some men with breast cancer
+      if(o=="X185" | o=="X642"){
+        ifelse(is.null(adjustmentList[[a]]), rhs <- s, rhs <- paste(s, paste(setdiff(adjustmentList[[a]], "sex"), collapse = "+"), sep = "+"))
+      }
+      
+      fmla <- as.formula(paste("Surv(timeToEvent, event01)~", rhs))
+      
+      # check for negative time to events
+      print(summary(dataForModelsSubset$timeToEvent))
+      if(min(dataForModelsSubset$timeToEvent<0)){print("ERROR: Negative time to event"); break}
+      
+      model <- coxph(fmla, data=dataForModelsSubset)
+      model_sum <- summary(model)
+      print(model)
+      
+      healthyCoxModelResults <- healthyCoxModelResults %>% 
+                                add_row(outcome = o,
+                                         predictor = s,
+                                         hr = model_sum$coefficients[s,"exp(coef)"],
+                                         lower95 = exp(confint(model))[s,"2.5 %"],
+                                         upper95 = exp(confint(model))[s,"97.5 %"],
+                                         p = model_sum$coefficients[s,"Pr(>|z|)"],
+                                         n = model_sum$n,
+                                         nevent = model_sum$nevent,
+                                         medianTimeToEvent = median(dataForModelsSubset$timeToEvent),
+                                         p25timeToEvent = quantile(dataForModelsSubset$timeToEvent, 0.25),
+                                         p75timeToEvent = quantile(dataForModelsSubset$timeToEvent, 0.75),
+                                         adjustments = a)
+      
+      rm(fmla, model, model_sum)
+    }
+  }
+}
+
+healthyCoxModelResults <- healthyCoxModelResults %>% left_join(phecode_key, by=c("outcome"="varname"))
+
+write.csv(healthyCoxModelResults,
+          file = "fitness_ukb_cox_healthy_score.csv",
+          row.names = FALSE)
+
+outputFilesToMd5 <- c(outputFilesToMd5, "fitness_ukb_cox_healthy_score.csv")
+```
+
+# PRS models
+
+We have PRS for  
+CVD  
+AF  
+ISS  
+AD  
+T2D  
+OP   
+HTN
+
+Examine them in models as predictors of the relevant outcome
+
+Create a data frame to translate between genetic PRS and protein score
+
+```{r}
+prs.protein.translate <- tibble(PRS.var = colnames(prs_score_and_pcs %>% select(contains("standard"))),
+                                pheocode.var = NA)
+
+prs.protein.translate$pheocode.var <- case_when(prs.protein.translate$PRS.var == "standard_CVD_prs" ~ "X411",
+                                                prs.protein.translate$PRS.var == "standard_AF_prs" ~ "X427.2",
+                                                prs.protein.translate$PRS.var == "standard_ISS_prs" ~ "X433",
+                                                prs.protein.translate$PRS.var == "standard_AD_prs" ~ "X290",
+                                                prs.protein.translate$PRS.var == "standard_T2D_prs" ~ "X250.2",
+                                                prs.protein.translate$PRS.var == "standard_OP_prs" ~ "X743",
+                                                prs.protein.translate$PRS.var == "standard_HT_prs" ~ "X401")
+```
+
+## PRS + protein score models (no interaction)
+
+We want to look at models of the form:  
+Surv(time, event) ~ PRS + protein.score + genetic PCs + age + sex + race + genetic PCs
+
+Report the HR on both the PRS, protein score, and p.values
+
+```{r, attr.output='style="max-height: 1000px;"'}
+PRSCoxModelResults <- tibble(phecode = character(),
+                              phecode_label = character(),
+                              PRS = character(),
+                              PRS.hr = double(),
+                              PRS.lower95 = double(),
+                              PRS.upper95 = double(),
+                              PRS.p = double(),
+                              protein.hr = double(),
+                              protein.lower95 = double(),
+                              protein.upper95 = double(),
+                              protein.p = double(),
+                              n = double(),
+                              nevent = double(),
+                              medianTimeToEvent = double(),
+                              p25timeToEvent = double(),
+                              p75timeToEvent = double(),
+                              formula = character())
+
+
+i <- prs.protein.translate$PRS.var[1]
+
+for(i in prs.protein.translate$PRS.var){
+  phecode <- prs.protein.translate$pheocode.var[prs.protein.translate$PRS.var==i]
+  temp <- dataForModels %>%
+          select(eid,
+                 G22DURTN_score_restricted,
+                 all_of(c(adjustmentList$ageSexRace, self_report_doc_exclusions[[phecode]])),
+                 contains(phecode),
+                 time_to_inpatient_censor,
+                 newTimeToDEATH) %>%
+          left_join(prs_score_and_pcs %>% select(eid, all_of(i), contains("pc")), by="eid")
+  
+  # review distribution of prs and scale
+  print(hist(temp[[i]], main = i))
+  print(summary(temp[[i]]))
+  temp[[i]] <- scale(temp[[i]])
+  temp$prs <- temp[[i]]
+  
+  colnames(temp)[colnames(temp)==paste0(phecode, "_days_after_assessment")] <- "event_days_after_assessment"
+  colnames(temp)[colnames(temp)==paste0(phecode, "_date")] <- "event_date"
+  
+  # filter the excluded cases and create new event and time to event vars
+  temp <- temp[temp[[phecode]]!="EXCLUDED",]
+  temp <- temp %>% mutate(event01 = case_when(event_date != "" ~ 1,
+                                   .default = 0))
+  temp <- temp %>% mutate(timeToEvent = pmin(event_days_after_assessment, time_to_inpatient_censor, newTimeToDEATH, na.rm = TRUE))
+  
+  # filter out the prevalent cases
+  temp <- temp %>% filter(if_all(self_report_doc_exclusions[[o]], ~ . == FALSE))
+    
+  # filter out those with time to event <=0
+  temp <- temp %>% filter(timeToEvent>0)
+  
+
+  temp <- temp %>% drop_na(all_of(c("timeToEvent",
+                                    "event01",
+                                    "G22DURTN_score_restricted",
+                                    "prs",
+                                    "age_at_assessment",
+                                    "sex",
+                                    "new_ethnicity",
+                                    "prs_pc1",
+                                    "prs_pc2",
+                                    "prs_pc3",
+                                    "prs_pc4")))
+  
+  fmla <- as.formula(paste0("Surv(timeToEvent, event01) ~ G22DURTN_score_restricted + prs + age_at_assessment + sex + new_ethnicity + prs_pc1 + prs_pc2 + prs_pc3 + prs_pc4"))
+  
+  print(summary(temp$timeToEvent))
+  
+  model <- coxph(fmla, data=temp)
+  model_sum <- summary(model)
+  print(model)
+  
+  PRSCoxModelResults <- PRSCoxModelResults %>% 
+                                   add_row(phecode = phecode,
+                                           phecode_label = phecode_key$description[phecode_key$varname==phecode],
+                                           PRS = i,
+                                           PRS.hr = model_sum$coefficients["prs","exp(coef)"],
+                                           PRS.lower95 = exp(confint(model))["prs","2.5 %"],
+                                           PRS.upper95 = exp(confint(model))["prs","97.5 %"],
+                                           PRS.p = model_sum$coefficients["prs","Pr(>|z|)"],
+                                           protein.hr = model_sum$coefficients["G22DURTN_score_restricted","exp(coef)"],
+                                           protein.lower95 = exp(confint(model))["G22DURTN_score_restricted","2.5 %"],
+                                           protein.upper95 = exp(confint(model))["G22DURTN_score_restricted","97.5 %"],
+                                           protein.p = model_sum$coefficients["G22DURTN_score_restricted","Pr(>|z|)"],
+                                           n = model_sum$n,
+                                           nevent = model_sum$nevent,
+                                           medianTimeToEvent = median(temp$timeToEvent),
+                                           p25timeToEvent = quantile(temp$timeToEvent, 0.25),
+                                           p75timeToEvent = quantile(temp$timeToEvent, 0.75),
+                                           formula = as.character(fmla)[3])
+}
+
+outputFilesToMd5 <- c(outputFilesToMd5, "PRSCoxModelResults.csv")
+write.csv(PRSCoxModelResults, file="PRSCoxModelResults.csv", row.names = FALSE)
+```
+
+## PRS*protein score interaction models
+
+We want to look at interaction models of the form:
+
+Surv(time, event) ~ PRS + protein.score + PRS*protein.score + genetic PCs + age + sex + race + genetic PCs
+
+```{r, attr.output='style="max-height: 1000px;"'}
+interactionPRSCoxModelResults <- tibble(phecode = character(),
+                                        phecode_label = character(),
+                                        PRS = character(),
+                                        interaction = character(),
+                                        intrxn.hr = double(),
+                                        intrxn.lower95 = double(),
+                                        intrxn.upper95 = double(),
+                                        intrxn.p = double(),
+                                        PRS.hr = double(),
+                                        PRS.lower95 = double(),
+                                        PRS.upper95 = double(),
+                                        PRS.p = double(),
+                                        protein.hr = double(),
+                                        protein.lower95 = double(),
+                                        protein.upper95 = double(),
+                                        protein.p = double(),
+                                        n = double(),
+                                        nevent = double(),
+                                        medianTimeToEvent = double(),
+                                        p25timeToEvent = double(),
+                                        p75timeToEvent = double(),
+                                        formula = character())
+
+eventRatePlotList <- NULL
+prsProteinScoreCorrelationPlotList <- NULL
+pepsiPlotList <- NULL
+
+i <- prs.protein.translate$PRS.var[1]
+
+for(i in prs.protein.translate$PRS.var){
+  phecode <- prs.protein.translate$pheocode.var[prs.protein.translate$PRS.var==i]
+  temp <- dataForModels %>%
+          select(eid,
+                 G22DURTN_score_restricted,
+                 all_of(c(adjustmentList$ageSexRace, self_report_doc_exclusions[[phecode]])),
+                 contains(phecode),
+                 time_to_inpatient_censor,
+                 newTimeToDEATH) %>%
+          left_join(prs_score_and_pcs %>% select(eid, all_of(i), contains("pc")), by="eid")
+  
+  # review distribution of prs and scale
+  print(hist(temp[[i]], main = i))
+  print(summary(temp[[i]]))
+  temp[[i]] <- scale(temp[[i]])
+  temp$prs <- temp[[i]]
+  
+  colnames(temp)[colnames(temp)==paste0(phecode, "_days_after_assessment")] <- "event_days_after_assessment"
+  colnames(temp)[colnames(temp)==paste0(phecode, "_date")] <- "event_date"
+  
+  # filter the excluded cases and create new event and time to event vars
+  temp <- temp[temp[[phecode]]!="EXCLUDED",]
+  temp <- temp %>% mutate(event01 = case_when(event_date != "" ~ 1,
+                                   .default = 0))
+  temp <- temp %>% mutate(timeToEvent = pmin(event_days_after_assessment, time_to_inpatient_censor, newTimeToDEATH, na.rm = TRUE))
+  
+  # filter out the prevalent cases
+  temp <- temp %>% filter(if_all(self_report_doc_exclusions[[o]], ~ . == FALSE))
+      
+  # filter out those with time to event <=0
+  temp <- temp %>% filter(timeToEvent>0)
+  
+  # look at the correlation
+  temp <- temp %>% mutate(d = densCols(temp[[i]], temp[["G22DURTN_score_restricted"]], colramp = colorRampPalette(rev(rainbow(10, end = 4/6)))))
+  
+  prsProteinScoreCorrelationPlotList[[i]] <- 
+    ggplot(temp, aes_string(x=i, y="G22DURTN_score_restricted")) +
+      geom_point(aes(col=d)) +
+      scale_color_identity() +
+      ggpubr::stat_cor(cor.coef.name = "R") +
+      labs(title = paste("Correlation of", i, "with fitness score")) +
+      theme_bw() +
+      guides(color=guide_legend(title = ""))
+  
+  temp <- temp %>% drop_na(all_of(c("timeToEvent",
+                                    "event01",
+                                    "G22DURTN_score_restricted",
+                                    "prs",
+                                    "age_at_assessment",
+                                    "sex",
+                                    "new_ethnicity",
+                                    "prs_pc1",
+                                    "prs_pc2",
+                                    "prs_pc3",
+                                    "prs_pc4")))
+  
+  fmla <- as.formula(paste0("Surv(timeToEvent, event01) ~ G22DURTN_score_restricted*prs + age_at_assessment + sex + new_ethnicity + prs_pc1 + prs_pc2 + prs_pc3 + prs_pc4"))
+  
+  print(summary(temp$timeToEvent))
+  model <- coxph(fmla, data=temp)
+  model_sum <- summary(model)
+  print(model)
+  
+  interactionTerm <- "G22DURTN_score_restricted:prs"
+  
+  interactionPRSCoxModelResults <- interactionPRSCoxModelResults %>% 
+                                   add_row(phecode = phecode,
+                                           phecode_label = phecode_key$description[phecode_key$varname==phecode],
+                                           PRS = i,
+                                           interaction = interactionTerm,
+                                           PRS.hr = model_sum$coefficients["prs","exp(coef)"],
+                                           PRS.lower95 = exp(confint(model))["prs","2.5 %"],
+                                           PRS.upper95 = exp(confint(model))["prs","97.5 %"],
+                                           PRS.p = model_sum$coefficients["prs","Pr(>|z|)"],
+                                           protein.hr = model_sum$coefficients["G22DURTN_score_restricted","exp(coef)"],
+                                           protein.lower95 = exp(confint(model))["G22DURTN_score_restricted","2.5 %"],
+                                           protein.upper95 = exp(confint(model))["G22DURTN_score_restricted","97.5 %"],
+                                           protein.p = model_sum$coefficients["G22DURTN_score_restricted","Pr(>|z|)"],
+                                           intrxn.hr = model_sum$coefficients[interactionTerm,"exp(coef)"],
+                                           intrxn.lower95 = exp(confint(model))[interactionTerm,"2.5 %"],
+                                           intrxn.upper95 = exp(confint(model))[interactionTerm,"97.5 %"],
+                                           intrxn.p = model_sum$coefficients[interactionTerm,"Pr(>|z|)"],
+                                           n = model_sum$n,
+                                           nevent = model_sum$nevent,
+                                           medianTimeToEvent = median(temp$timeToEvent),
+                                           p25timeToEvent = quantile(temp$timeToEvent, 0.25),
+                                           p75timeToEvent = quantile(temp$timeToEvent, 0.75),
+                                           formula = as.character(fmla)[3])
+  ##
+  ## visualize the interactions
+  ##
+  
+  # using emmeans to make a PEPSI plot
+  
+  prs.range <- quantile(temp[["prs"]], probs = seq(from=0.01, to=0.99, by=0.01), na.rm=TRUE)
+  G22DURTN_score_restricted.range <- quantile(temp[["G22DURTN_score_restricted"]], probs = seq(from=0.01, to=0.99, by=0.01), na.rm=TRUE)
+  
+  emm <- emmeans(model,
+                 specs=c("prs", "G22DURTN_score_restricted"),
+                 at = list(prs=prs.range, G22DURTN_score_restricted=G22DURTN_score_restricted.range),
+                 rg.limit = 102010)
+  
+  emPlotData <- summary(emm)
+  emPlotData$G22DURTN_score_restricted.ntile <- factor(emPlotData$G22DURTN_score_restricted, G22DURTN_score_restricted.range, labels = seq(from=0.01, to=0.99, by=0.01)*100)
+  emPlotData$prs.ntile <- factor(emPlotData$prs, prs.range, labels = seq(from=0.01, to=0.99, by=0.01)*100)
+  
+  # the emmean is the log(hazard), we want to show the log(HR) relative to the median PRS and median protein score
+  ref.hazard <- emPlotData %>% filter(prs.ntile==50 & G22DURTN_score_restricted.ntile==50) %>% pull(emmean)
+  emPlotData <- emPlotData %>% mutate(log.hr = emmean - ref.hazard)
+  
+  # create the contours we want for the plots
+  # this will create a range of HR between the min and max, with powers of 2 in between
+  test=c(1/2^(5:0),2^(0:5))
+  contourBreaks <- signif(c(min(exp(emPlotData$log.hr)),
+                            test[test>min(exp(emPlotData$log.hr)) & test<max(exp(emPlotData$log.hr))],
+                            max(exp(emPlotData$log.hr))),
+                          3)
+  
+  contourColors <- c(colorRampPalette(c('dodgerblue4','white'))(length(contourBreaks[contourBreaks<1])+1),
+                     colorRampPalette(c('white','firebrick'))(length(contourBreaks[contourBreaks>1])+1)[-1])
+  
+  pepsiPlotList[[i]] <-
+  # let's do this plot-
+    ggplot(emPlotData, aes(x=prs, y=G22DURTN_score_restricted, z=exp(log.hr))) + 
+      geom_contour_filled(breaks=contourBreaks) +  # These breaks should be specified
+      scale_color_manual(aesthetics = "fill", drop = FALSE, values = contourColors) +
+      # metR::geom_label_contour(aes(z=exp(log.hr))) + 
+      # metR::geom_text_contour(min.size = 0, label.placer = label_placer_random(), rotate = FALSE) +
+      guides(fill=guide_legend(title = "Hazard ratio")) +
+      coord_equal() + 
+      scale_x_continuous(expand = c(0, 0)) +
+      scale_y_continuous(expand = c(0, 0)) +
+      ylab("Protein score of fitness") +
+      xlab(paste(toupper(paste(strsplit(i, "_")[[1]][2:3], collapse = " ")))) +
+      labs(caption = phecode_key$description[phecode_key$varname==phecode],
+           subtitle = "Negative protein score = more fit")
+      theme(legend.position="bottom") + 
+      theme_bw()
+
+  
+  print(rmarkdown::paged_table(emPlotData))
+
+  # check the emmeans result by manually calculating the hazard from the Cox model
+  # create a grid with all of the possible combinations of fitness scores, PRS and co-variates
+  newdata <- expand.grid(G22DURTN_score_restricted = G22DURTN_score_restricted.range,
+                         prs = prs.range,
+                         sex=unique(temp$sex),
+                         new_ethnicity=unique(temp$new_ethnicity),
+                         age_at_assessment=mean(temp$age_at_assessment),
+                         prs_pc1 = mean(temp$prs_pc1, na.rm = TRUE),
+                         prs_pc2 = mean(temp$prs_pc2, na.rm = TRUE),
+                         prs_pc3 = mean(temp$prs_pc3, na.rm = TRUE),
+                         prs_pc4 = mean(temp$prs_pc4, na.rm = TRUE))
+
+  # create a "model matrix" that creates the necessary dummy variables we need to matrix multiply by the model coefs
+  newdataModelMatrix <- model.matrix(model, newdata)
+  newdataCoef <- coef(model)
+  newdataModelMatrix <- cbind(newdataModelMatrix, newdataModelMatrix %*% newdataCoef)
+  
+  # matrix multiply to get the result of the cox model
+  est.emmean <- newdataModelMatrix %>%
+                as_tibble() %>%
+                group_by(G22DURTN_score_restricted, prs) %>% summarise(est.emmean = mean(V14))
+  
+  # factorize some variables for visualization and merging
+  est.emmean$G22DURTN_score_restricted <- factor(est.emmean$G22DURTN_score_restricted, G22DURTN_score_restricted.range, labels = seq(from=0.01, to=0.99, by=0.01)*100)
+  est.emmean$prs <- factor(est.emmean$prs, prs.range, labels = seq(from=0.01, to=0.99, by=0.01)*100)
+  compare.emmeans <- emPlotData %>% left_join(est.emmean, by=c("G22DURTN_score_restricted.ntile"="G22DURTN_score_restricted","prs.ntile"="prs"))
+  
+  # visualize
+  print(ggplot(compare.emmeans, aes(est.emmean, emmean)) +
+                geom_point() +
+                theme_bw() +
+                geom_abline(slope=1) +
+                labs(title = phecode_key$description[phecode_key$varname==phecode])
+  )
+  
+  
+  
+  ##
+  ## plot event rates against each other
+  ##
+  
+  temp <- temp %>% mutate(ntile.G22DURTN_score_restricted = ntile(G22DURTN_score_restricted, 100))
+  temp <- temp %>% mutate(ntile.prs = ntile(temp[[i]], 100))
+  
+  poissondata1 <- temp %>% group_by(ntile.G22DURTN_score_restricted) %>% summarise(events = sum(event01),
+                                                         eventYears = sum(timeToEvent)/365.25)
+  
+  poissondata2 <- temp %>% group_by(ntile.prs) %>% summarise(events = sum(event01),
+                                                         eventYears = sum(timeToEvent)/365.25)
+  
+  poissondata1 <- poissondata1 %>% mutate(G22DURTN_score_restricted = events/eventYears)
+  poissondata2 <- poissondata2 %>% mutate(prs = events/eventYears)
+  
+  test <- poissondata1 %>% 
+          left_join(poissondata2, by=c("ntile.G22DURTN_score_restricted"="ntile.prs")) %>%
+          select(ntile.G22DURTN_score_restricted, G22DURTN_score_restricted, prs) %>%
+          pivot_longer(cols = c("G22DURTN_score_restricted", "prs"), names_to = "score_type", values_to = "eventRate")
+  
+  eventRatePlotList[[i]] <- ggplot(test, aes(x=ntile.G22DURTN_score_restricted, y = eventRate, color = score_type)) +
+                                    geom_point() +
+                                    ggsci::scale_color_npg() +
+                                    labs(title=phecode_key$description[phecode_key$varname==phecode],
+                                         subtitle = i) +
+                                    xlab("Percentile of score") +
+                                    ylab("Event rate") +
+                                    theme_bw()
+
+  rm(phecode, temp, model, model_sum, fmla, interactionTerm, poissondata1, poissondata2, test, emLinePlotData, emPlotData)
+}
+
+outputFilesToMd5 <- c(outputFilesToMd5, "ukbb_interactionPRS_results.csv")
+write.csv(interactionPRSCoxModelResults, file="ukbb_interactionPRS_results.csv", row.names = FALSE)
+```
+
+```{r}
+rmarkdown::paged_table(interactionPRSCoxModelResults)
+```
+
+```{r}
+eventRatePlotList
+prsProteinScoreCorrelationPlotList
+pepsiPlotList
+
+plot_grid(plotlist=pepsiPlotList, labels = "AUTO")
+ggsave(filename = "pepsiPlotGrid.pdf", height = 12, width = 12)
+outputFilesToMd5 <- c(outputFilesToMd5, "pepsiPlotGrid.pdf")
+```
+
+# Save output
+
+```{r}
+
+save.image(file = "fitness_UKBB_ASP.Rdata")
+
+outputFilesToMd5 <- c(outputFilesToMd5,"fitness_UKBB_ASP_Downloadable.Rdata", "fitness_UKBB_ASP.Rdata")
+
+dataFileInfo=data.frame(
+  File=basename(outputFilesToMd5),
+  md5=tools::md5sum(outputFilesToMd5)
+)
+
+knitr::kable(dataFileInfo)
+
+sessionInfo()
+```
+
+
+
+
